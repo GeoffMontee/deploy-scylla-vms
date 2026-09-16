@@ -1,0 +1,95 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Python environments, builds, and packaging
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+
+# Test and tool artifacts
+test-results/
+reports/
+*.prof
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets/
+local-secrets/
+
+# Terraform defense-in-depth only: these patterns do not configure state paths.
+# Planned application state is external/configurable and isolated per cluster.
+# .terraform/ is Terraform's provider/module/backend working cache, not state.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfplan
+*.plan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Keep source dependency selections reproducible and tracked.
+!.terraform.lock.hcl
+
+# Ansible runtime, cache, retry, and secret artifacts
+*.retry
+*.vault
+*.vault-password
+*.vault-password-file
+.ansible/
+.ansible-cache/
+ansible-cache/
+fact-cache/
+facts/
+vault-password*
+
+# Generated inventories and accidental local runtime artifacts.
+# The configured default is never an in-repository directory; these are guards
+# against accidentally created files, not a declaration of runtime placement.
+generated-inventory/
+inventory.generated.*
+*.generated.inventory
+*.log
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
