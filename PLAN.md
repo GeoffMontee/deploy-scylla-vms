@@ -20,6 +20,7 @@
 - [6. Terraform output to Ansible inventory](#6-terraform-output-to-ansible-inventory)
   - [Refresh and conflict handling](#refresh-and-conflict-handling)
 - [7. Ansible responsibilities](#7-ansible-responsibilities)
+  - [Proposed playbook catalog](#proposed-playbook-catalog)
 - [8. SSH, bastions, and host trust](#8-ssh-bastions-and-host-trust)
 - [9. Operation workflows](#9-operation-workflows)
   - [Deploy](#deploy)
@@ -571,6 +572,106 @@ Planned roles/playbooks cover:
 - OS patch/upgrade and reboot with one-host-at-a-time health gates; and
 - post-operation verification and evidence collection.
 
+### Proposed playbook catalog
+
+All paths below are proposed; no playbook exists yet. Names follow
+`ansible/playbooks/<responsibility>.yml`. Python selects the operation sequence,
+acquires locks, validates fresh inventory/state, enforces confirmations and
+checkpoints, and invokes each playbook with the canonical inventory, an explicit
+host limit, and allowlisted non-secret extra variables. Terraform remains solely
+responsible for infrastructure. Ansible must not infer provider resources,
+select destructive targets, or advance the Python operation journal.
+
+- `ansible/playbooks/inventory-preflight.yml` — controller/read-only validation
+  of required groups, stable IDs, role hostvars, datacenter/rack mappings, and
+  operation-specific target membership.
+- `ansible/playbooks/connectivity-check.yml` — read-only SSH/direct/ProxyJump
+  reachability and host-identity checks for the explicitly limited hosts.
+- `ansible/playbooks/evidence-collect.yml` — read-only, bounded collection of
+  service versions/status, topology, and diagnostics before or after an
+  operation; output is returned to Python for redaction and journaling.
+- `ansible/playbooks/jump-host-configure.yml` — base configuration and hardening
+  for the `jump_hosts` group; it never creates VCN, NSG, route, or compute
+  resources.
+- `ansible/playbooks/base-os.yml` — idempotent users, repositories, time sync,
+  limits, kernel settings, disks/filesystems, and role-specific prerequisites on
+  newly provisioned or explicitly reconverged hosts.
+- `ansible/playbooks/scylla-node.yml` — install and configure ScyllaDB on
+  `scylla` hosts, including persisted datacenter/rack/snitch topology, but do not
+  initiate add/remove/replace topology actions.
+- `ansible/playbooks/scylla-health.yml` — read-only ring, membership, schema,
+  datacenter/rack, streaming, and service health gates.
+- `ansible/playbooks/manager-agent.yml` — install/configure the Manager agent on
+  explicitly limited Scylla nodes and verify server-to-agent reachability.
+- `ansible/playbooks/monitoring-agent.yml` — install/configure node-side
+  monitoring/exporter components without changing monitoring-server targets.
+- `ansible/playbooks/manager-server.yml` — install/configure the Manager server,
+  register the validated cluster, and verify server health; task creation remains
+  explicit.
+- `ansible/playbooks/monitoring-stack.yml` — install/configure the monitoring
+  server stack, dashboards, alerts, storage/retention, and service validation.
+- `ansible/playbooks/monitoring-targets.yml` — atomically refresh target files
+  from validated inventory and verify target discovery; it does not install
+  ScyllaDB packages.
+- `ansible/playbooks/manager-tasks.yml` — inspect, quiesce, resume, or validate
+  Manager repair/backup tasks using an explicit `manager_task_action`; default
+  action is read-only inspection.
+- `ansible/playbooks/scylla-bootstrap.yml` — bootstrap exactly the newly
+  provisioned, limited Scylla node(s) under add-node guidance and wait for the
+  joining-to-normal transition.
+- `ansible/playbooks/scylla-remove-live.yml` — decommission exactly one reachable
+  Up Normal Scylla node after Python safety/confirmation gates.
+- `ansible/playbooks/scylla-remove-dead.yml` — perform the target-version
+  unavailable-node removal for one confirmed permanently down Host ID, including
+  repair-based-operation prerequisites/variants.
+- `ansible/playbooks/scylla-replace-dead.yml` — configure and bootstrap one new
+  host as the replacement for one confirmed dead Host ID, preserving desired
+  logical topology and validating streaming.
+- `ansible/playbooks/scylla-cleanup.yml` — run post-scale cleanup serially on the
+  Python-computed eligible host limit and verify completion before future node
+  removal.
+- `ansible/playbooks/scylla-repair.yml` — run and verify the
+  target-version/Manager-aware repair variant on an explicitly limited node or
+  Python-computed serial set when replacement/removal prerequisites require it.
+- `ansible/playbooks/service-converge.yml` — idempotently reconcile or restart
+  only an explicitly selected service/configuration scope; topology mutation is
+  forbidden.
+- `ansible/playbooks/scylla-cluster-shutdown.yml` — perform an explicitly
+  approved, target-version full-cluster service shutdown before complete
+  infrastructure teardown; it is not individual node removal.
+- `ansible/playbooks/os-upgrade-preflight.yml` — read-only compatibility,
+  package/repository, reboot, capacity, route, and per-host readiness report.
+- `ansible/playbooks/os-upgrade-in-place.yml` — apply only an approved in-place
+  guest-OS update to one limited host, with role-specific drain/reboot handling;
+  unsupported major upgrades are refused.
+- `ansible/playbooks/os-reprovision-prepare.yml` — preflight, optional
+  target-version drain/quiesce, and evidence for a
+  Python/Terraform-controlled immutable host replacement; it never creates or
+  destroys the VM.
+- `ansible/playbooks/os-upgrade-postcheck.yml` — verify one upgraded/reprovisioned
+  host's OS, reboot, service, route, and role-specific cluster health before the
+  next host proceeds.
+
+The read-only preflight, connectivity, health, evidence, and OS-preflight/
+postcheck playbooks must support Ansible check mode without reporting false
+changes. Configuration playbooks should support
+[check/diff mode](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html)
+where their modules permit it, but check mode is only a preview. The bootstrap,
+remove-live, remove-dead, replace-dead, cleanup, repair, cluster-shutdown, in-place
+upgrade, and reprovision-preparation playbooks either mutate topology/host state
+or coordinate irreversible boundaries; they must detect and reject check mode
+rather than simulate safety. Python provides a separate operation plan.
+
+Use [playbook tags](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_tags.html)
+only for documented sub-responsibilities, never to skip required safety gates.
+Python supplies explicit inventory patterns/limits following
+[Ansible pattern guidance](https://docs.ansible.com/ansible/latest/inventory_guide/intro_patterns.html);
+topology-mutating playbooks require one stable host ID unless the catalog entry
+explicitly defines a Python-computed serial set. Extra variables are
+schema-validated, non-secret operation context such as cluster UUID, stable
+target ID, expected datacenter/rack, action variant, and journal checkpoint ID;
+secret values remain environment-only.
+
 The exact ScyllaDB configuration files/keys and verification interfaces can vary
 by ScyllaDB version and by the pinned upstream role. Playbooks must follow the
 version-specific official ScyllaDB guidance rather than hard-coding an assumed
@@ -585,7 +686,10 @@ All roles/playbooks must be idempotent: a second run with unchanged inputs shoul
 report no material changes. Handlers, `changed_when`, `failed_when`, check mode,
 tags, serial limits, and retries must be deliberate. Pin role/collection
 versions. Do not edit vendored upstream role code without a documented patching
-policy.
+policy. For topology-mutating playbooks, idempotence means recognizing the exact
+operation/checkpoint and an already-completed postcondition as a no-op; a
+different or ambiguous live topology must fail closed rather than repeating the
+mutation.
 
 Ansible Vault files or password files are not generated or committed by this
 tool. If Vault is added, its password still comes from an environment variable
@@ -621,6 +725,29 @@ records durable non-secret completion evidence so an interrupted operation can
 safely resume after revalidation.
 
 ### Deploy
+
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`.
+- **2.** `ansible/playbooks/connectivity-check.yml`, initially limited to jump
+  hosts or directly reachable hosts.
+- **3.** If jump hosts exist,
+  `ansible/playbooks/base-os.yml` limited to `jump_hosts`, then
+  `ansible/playbooks/jump-host-configure.yml`; rerun
+  `ansible/playbooks/connectivity-check.yml` for all hosts through final routes.
+  With zero jump hosts, require the direct-route connectivity result instead.
+- **4.** `ansible/playbooks/base-os.yml` on non-jump managed hosts, then
+  `ansible/playbooks/scylla-node.yml` on `scylla`.
+- **5.** `ansible/playbooks/scylla-health.yml`; do not configure service roles
+  until the initial ring/topology gate passes.
+- **6.** `ansible/playbooks/manager-server.yml`, then
+  `ansible/playbooks/monitoring-stack.yml`.
+- **7.** `ansible/playbooks/manager-agent.yml` and
+  `ansible/playbooks/monitoring-agent.yml` on healthy Scylla nodes, then
+  `ansible/playbooks/monitoring-targets.yml`.
+- **8.** `ansible/playbooks/manager-tasks.yml` only for explicitly requested
+  registration/task actions, followed by `ansible/playbooks/scylla-health.yml`
+  and `ansible/playbooks/evidence-collect.yml`.
 
 1. Resolve configuration, validate the cluster name/topology, and acquire the
    new cluster's state lock; reject an existing cluster identity or unexpected
@@ -679,6 +806,27 @@ safely resume after revalidation.
 
 ### Add-node
 
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`, and
+  `ansible/playbooks/scylla-health.yml` against the existing cluster.
+- **2.** `ansible/playbooks/manager-tasks.yml` with read-only inspect action,
+  followed by quiesce only when policy requires it.
+- **3.** After Terraform creates the host and inventory is refreshed,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/base-os.yml`, and
+  `ansible/playbooks/scylla-node.yml`, all limited to the new stable ID.
+- **4.** `ansible/playbooks/scylla-bootstrap.yml` limited to that same ID,
+  followed by `ansible/playbooks/scylla-health.yml` on the cluster.
+- **5.** `ansible/playbooks/manager-agent.yml` and
+  `ansible/playbooks/monitoring-agent.yml` limited to the healthy new node,
+  followed by `ansible/playbooks/scylla-cleanup.yml` serially on the computed
+  eligible old nodes.
+- **6.** `ansible/playbooks/monitoring-targets.yml`,
+  `ansible/playbooks/manager-tasks.yml` with validate/resume action, and
+  `ansible/playbooks/evidence-collect.yml`.
+
 1. Require exactly one new logical node identity and target zone, resolve its
    persisted cluster datacenter and zone rack, and reject an existing/tombstoned
    ID, undeclared/unmapped zone, or request that implicitly changes unrelated
@@ -726,6 +874,26 @@ safely resume after revalidation.
 
 ### Scale-out
 
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/scylla-health.yml`, and read-only
+  `ansible/playbooks/manager-tasks.yml`.
+- **2.** For each Python-selected node/batch after its Terraform apply:
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/base-os.yml`, and `ansible/playbooks/scylla-node.yml`,
+  limited to only that batch.
+- **3.** `ansible/playbooks/scylla-bootstrap.yml` for the batch, then
+  `ansible/playbooks/scylla-health.yml` for the full cluster before Python plans
+  another batch, followed by `ansible/playbooks/manager-agent.yml` and
+  `ansible/playbooks/monitoring-agent.yml` limited to the healthy new nodes.
+- **4.** After all additions, `ansible/playbooks/scylla-cleanup.yml` serially on
+  the documented Python-computed host set, then
+  `ansible/playbooks/monitoring-targets.yml`,
+  `ansible/playbooks/manager-tasks.yml` with validate/resume action, and
+  `ansible/playbooks/evidence-collect.yml`.
+
 1. Accept a desired per-zone topology, acquire the cluster lock, and calculate
    the expansion from stable current identities; reject decreases (which belong
    to `scale-in`), implicit renumbering, unmapped zones, and any change to
@@ -767,6 +935,30 @@ safely resume after revalidation.
    rerun.
 
 ### Replace-node
+
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/scylla-health.yml`, and
+  `ansible/playbooks/evidence-collect.yml` before replacement.
+- **2.** `ansible/playbooks/manager-tasks.yml` with inspect/quiesce action as
+  required by active tasks and the replacement procedure.
+- **3.** After Terraform creates the replacement:
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/base-os.yml`, and `ansible/playbooks/scylla-node.yml`,
+  limited to the new provider generation of the stable logical ID.
+- **4.** `ansible/playbooks/scylla-replace-dead.yml` for exactly the confirmed
+  dead Host ID, then `ansible/playbooks/scylla-health.yml`, followed by
+  `ansible/playbooks/manager-agent.yml` and
+  `ansible/playbooks/monitoring-agent.yml` on the healthy replacement.
+- **5.** `ansible/playbooks/scylla-repair.yml` only when the target-version
+  procedure/RBNO state requires post-replacement repair; if Manager performs the
+  repair, its agent/server health must already be validated.
+- **6.** `ansible/playbooks/monitoring-targets.yml`,
+  `ansible/playbooks/manager-tasks.yml` with validate/resume action,
+  `ansible/playbooks/scylla-health.yml`, and
+  `ansible/playbooks/evidence-collect.yml`.
 
 1. Require one existing stable logical node ID, the observed failure state, and
    an explicit replacement reason; reject healthy-node replacement without a
@@ -815,6 +1007,27 @@ safely resume after revalidation.
 
 ### Destroy-node
 
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/scylla-health.yml`, and
+  `ansible/playbooks/evidence-collect.yml`.
+- **2.** `ansible/playbooks/manager-tasks.yml` with inspect/quiesce action.
+- **3a — live node.** `ansible/playbooks/scylla-remove-live.yml`, limited to the
+  confirmed reachable Up Normal stable ID.
+- **3b — permanently dead node.** If required before removal,
+  `ansible/playbooks/scylla-repair.yml` on the Python-computed surviving set,
+  then `ansible/playbooks/scylla-remove-dead.yml` with the confirmed dead Host
+  ID. Never run both live and dead removal variants.
+- **4.** `ansible/playbooks/scylla-health.yml` must pass before Python permits
+  Terraform deletion.
+- **5.** After Terraform deletion and fresh inventory:
+  `ansible/playbooks/monitoring-targets.yml`,
+  `ansible/playbooks/manager-tasks.yml` with validate/resume action,
+  `ansible/playbooks/scylla-health.yml`, and
+  `ansible/playbooks/evidence-collect.yml` on surviving hosts.
+
 1. Require exactly one existing stable node ID and whether it is a healthy
    decommission or failed-node removal; full-cluster teardown belongs to
    `destroy`, and topology-based contraction belongs to `scale-in`.
@@ -856,6 +1069,25 @@ safely resume after revalidation.
 
 ### Scale-in
 
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/scylla-health.yml`, read-only
+  `ansible/playbooks/manager-tasks.yml`, and
+  `ansible/playbooks/evidence-collect.yml`.
+- **2.** For each Python-selected candidate, use the `destroy-node` variant:
+  `ansible/playbooks/scylla-remove-live.yml`, or, only for a confirmed
+  permanently dead node, conditional `ansible/playbooks/scylla-repair.yml`
+  followed by `ansible/playbooks/scylla-remove-dead.yml`.
+- **3.** Run `ansible/playbooks/scylla-health.yml` after each logical removal and
+  before its Terraform deletion or selection of the next candidate.
+- **4.** After each refreshed inventory, and finally after the contraction:
+  `ansible/playbooks/monitoring-targets.yml`,
+  `ansible/playbooks/manager-tasks.yml` with validate/resume action,
+  `ansible/playbooks/scylla-health.yml`, and
+  `ansible/playbooks/evidence-collect.yml`.
+
 1. Accept lower desired per-zone counts, acquire the lock, and reject increases
    (which belong to `scale-out`) or mixed deltas that obscure the contraction.
 2. Reconcile metadata, Terraform state, fresh Terraform-output inventory,
@@ -887,6 +1119,27 @@ safely resume after revalidation.
    topology, Terraform and inventory digests, and any partial-result status.
 
 ### Destroy
+
+**Required Ansible playbooks (execution order)**
+
+- **1.** Before the destroy plan/confirmation:
+  `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/scylla-health.yml`,
+  `ansible/playbooks/manager-tasks.yml` with inspect action, and
+  `ansible/playbooks/evidence-collect.yml`.
+- **2.** After confirmation, `ansible/playbooks/manager-tasks.yml` with quiesce
+  action.
+- **3.** Normally, `ansible/playbooks/scylla-cluster-shutdown.yml` performs the
+  approved full-cluster service shutdown. If the target-version teardown runbook
+  explicitly requires logical node removal, use
+  `ansible/playbooks/scylla-remove-live.yml` or the conditional
+  `ansible/playbooks/scylla-repair.yml` plus
+  `ansible/playbooks/scylla-remove-dead.yml` one confirmed node at a time, with
+  `ansible/playbooks/scylla-health.yml` between nodes.
+- **4.** Run `ansible/playbooks/evidence-collect.yml` for final reachable-host
+  evidence before Terraform apply. No Ansible playbook may run after Terraform
+  destroys the hosts; Python/provider/state verification completes teardown.
 
 1. Require the full-cluster operation explicitly; reject node selectors and
    direct callers to `destroy-node`/`scale-in` for individual membership changes.
@@ -938,6 +1191,34 @@ safely resume after revalidation.
 
 ### Redeploy
 
+**Required Ansible playbooks (execution order)**
+
+- **1.** For every scope: `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`, conditional
+  `ansible/playbooks/scylla-health.yml` when Scylla is in scope, and
+  `ansible/playbooks/evidence-collect.yml`.
+- **2 — service scope.** `ansible/playbooks/service-converge.yml` with one
+  allowlisted service/tag set and explicit host limit.
+- **2 — host scope.** After any approved Terraform replacement,
+  `ansible/playbooks/connectivity-check.yml` then
+  `ansible/playbooks/base-os.yml`, followed only by the host role playbook:
+  `ansible/playbooks/jump-host-configure.yml`,
+  `ansible/playbooks/manager-server.yml`,
+  `ansible/playbooks/monitoring-stack.yml`, or the Scylla `replace-node`
+  sequence; optionally apply `ansible/playbooks/manager-agent.yml` and
+  `ansible/playbooks/monitoring-agent.yml` on Scylla hosts.
+- **2 — cluster scope.** `ansible/playbooks/base-os.yml`,
+  `ansible/playbooks/scylla-node.yml`,
+  `ansible/playbooks/manager-server.yml`,
+  `ansible/playbooks/monitoring-stack.yml`, and
+  `ansible/playbooks/manager-agent.yml`,
+  `ansible/playbooks/monitoring-agent.yml`, then
+  `ansible/playbooks/monitoring-targets.yml`, each limited to its role and
+  omitting any no-change/out-of-scope playbook.
+- **3.** `ansible/playbooks/scylla-health.yml` where applicable, then
+  `ansible/playbooks/evidence-collect.yml`. Topology mutation playbooks are
+  forbidden except through the delegated add/remove/replace workflow.
+
 1. Require an explicit scope and target: `service` for selected configuration/
    service convergence, `host` for one stable host, or `cluster` for
    cluster-wide reconciliation. Reject an unscoped request.
@@ -979,6 +1260,22 @@ safely resume after revalidation.
 
 ### Refresh-monitoring
 
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml` limited to monitoring/Manager and
+  representative targets, then `ansible/playbooks/scylla-health.yml`.
+- **2.** `ansible/playbooks/monitoring-targets.yml`.
+- **3.** `ansible/playbooks/monitoring-stack.yml` only when server-side
+  monitoring configuration/validation requires convergence; use
+  `ansible/playbooks/manager-server.yml` only for explicitly requested Manager
+  monitoring integration.
+- **4.** `ansible/playbooks/evidence-collect.yml`. Normally do not run
+  `ansible/playbooks/scylla-node.yml`,
+  `ansible/playbooks/manager-agent.yml`, or
+  `ansible/playbooks/monitoring-agent.yml`; agent/package drift belongs to an
+  explicit `redeploy` scope.
+
 1. Acquire the cluster lock, read current Terraform state/output without an
    infrastructure apply, regenerate/validate inventory, and compare stable host
    identities with live ScyllaDB membership using the
@@ -1010,6 +1307,36 @@ safely resume after revalidation.
    Terraform state unchanged.
 
 ### Upgrade-os
+
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml`,
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/scylla-health.yml` where applicable,
+  `ansible/playbooks/manager-tasks.yml` with inspect/quiesce action, and
+  `ansible/playbooks/evidence-collect.yml`.
+- **2.** `ansible/playbooks/os-upgrade-preflight.yml` serially for every scoped
+  host before mutation.
+- **3a — supported in-place path.**
+  `ansible/playbooks/os-upgrade-in-place.yml` for exactly one host.
+- **3b — immutable reprovision path.**
+  `ansible/playbooks/os-reprovision-prepare.yml`, then Python checkpoints and
+  Terraform replaces the host. After fresh inventory, run
+  `ansible/playbooks/connectivity-check.yml`,
+  `ansible/playbooks/base-os.yml`, then exactly the role path:
+  `ansible/playbooks/jump-host-configure.yml` for a jump host,
+  `ansible/playbooks/manager-server.yml` for Manager, or
+  `ansible/playbooks/monitoring-stack.yml` for monitoring. A Scylla host must
+  delegate to the `replace-node` sequence, including
+  `ansible/playbooks/scylla-node.yml`,
+  `ansible/playbooks/scylla-replace-dead.yml`,
+  `ansible/playbooks/manager-agent.yml`, and
+  `ansible/playbooks/monitoring-agent.yml`, rather than generic reprovision.
+- **4.** `ansible/playbooks/os-upgrade-postcheck.yml`, then
+  `ansible/playbooks/scylla-health.yml` where applicable, before Python advances
+  to another host. Never run both in-place and reprovision variants for one host.
+- **5.** After all hosts, `ansible/playbooks/manager-tasks.yml` with
+  validate/resume action and `ansible/playbooks/evidence-collect.yml`.
 
 1. Require an approved source/target OS and repository policy, explicit role/
    host scope, maintenance window, and evidence that the OS change is compatible
@@ -1056,6 +1383,13 @@ safely resume after revalidation.
    topology and digests.
 
 ### Check-jump-hosts
+
+**Required Ansible playbooks (execution order)**
+
+- **1.** `ansible/playbooks/inventory-preflight.yml` in read-only/check mode.
+- **2.** `ansible/playbooks/connectivity-check.yml`, limited to `jump_hosts` and
+  their assigned target paths. No configuration, topology, OS, service, or
+  evidence-collection playbook is permitted.
 
 1. Run read-only by default, acquiring a shared/read cluster lock where
    supported (otherwise the normal lock), and reject flags that imply Terraform
@@ -1196,6 +1530,13 @@ journal the phase, and return a conventional nonzero cancellation status.
   datacenter/rack fields;
 - inventory schema validation, topology hostvar/group propagation, and
   datacenter/rack conflict/drift classification;
+- operation-to-playbook mapping resolution, exact catalog names, conditional
+  variants, ordering, role/stable-ID limits, allowlisted extra-variable schemas,
+  and fresh-inventory preconditions;
+- refusal of forbidden combinations such as both live/dead removal variants,
+  both in-place/reprovision OS variants, topology playbooks in check mode,
+  Scylla reprovision outside `replace-node`, or any Ansible run after full
+  Terraform destruction;
 - confirmation and exit-code mapping;
 - command construction with no shell interpolation; and
 - operation journal resume decisions.
@@ -1209,6 +1550,10 @@ change a real ScyllaDB cluster.
   datacenter/rack values, null role conventions, and schema-upgrade failures.
 - Generated inventory checked by `ansible-inventory`, with exact topology
   hostvars and expected derived datacenter/rack groups.
+- A catalog contract test parses/loads the declared operation mapping and fails
+  on an undefined/unmapped playbook, unsafe order, missing explicit inventory or
+  limit, unapproved extra variable, stale inventory digest, or a mutating
+  playbook selected for read-only `check-jump-hosts`.
 - Terraform `fmt`, `validate`, and plan against mocked/test modules where
   practical.
 - Ansible syntax checks, lint, check mode, and idempotence in disposable local
@@ -1270,7 +1615,8 @@ implementation and packaging files exist.
 
 - Complete deploy, dry-run/plan/apply gates, postconditions, and resume.
 - Acceptance: ephemeral cluster deploys, converges on rerun, survives a
-  controlled interruption, and reports injected drift before mutation.
+  controlled interruption, reports injected drift before mutation, and records
+  the expected ordered/limited playbook invocations with redacted variables.
 
 ### Phase 5 — node lifecycle and scaling
 
@@ -1278,7 +1624,9 @@ implementation and packaging files exist.
 - Acceptance: stable identities never renumber; uneven topology behaves as
   declared; add/scale preserve zone-to-rack mappings, replacement preserves the
   target's datacenter/rack, and each workflow gates on replication/topology
-  health and updates Manager/monitoring.
+  health and updates Manager/monitoring. Tests prove logical Scylla topology
+  playbooks finish before corresponding Terraform deletion and forbidden
+  live/dead variants cannot run together.
 
 ### Phase 6 — maintenance and destruction
 
