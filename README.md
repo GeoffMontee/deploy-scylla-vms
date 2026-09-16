@@ -111,10 +111,11 @@ Terraform's provider/module/backend working cache, not the state directory.
 The eventual CLI is expected to resemble:
 
 ```console
-$ python deploy_scylla_vms.py deploy \
+$ python deploy_scylla_vms.py \
     --cloud-provider oci \
     --cluster-name example \
     --state-dir /operator-selected/per-user-state-root \
+    deploy \
     --zone AD-1 \
     --zone AD-2 \
     --nodes-per-zone AD-1=3 \
@@ -123,9 +124,11 @@ $ python deploy_scylla_vms.py deploy \
     --plan
 ```
 
-This example is illustrative only. There is no executable script or
-infrastructure implementation in the repository yet, and argument names may
-change during implementation review.
+This abbreviated example is illustrative only and intentionally omits other
+planned required deploy inputs such as OCI location, shapes, network/SSH, and
+storage policy. See `PLAN.md` for the normative proposed per-operation contract.
+There is no executable script or infrastructure implementation in the
+repository yet, and argument names may change during implementation review.
 
 ## Repository contents
 

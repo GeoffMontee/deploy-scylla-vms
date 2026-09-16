@@ -24,6 +24,7 @@
   - [Proposed playbook catalog](#proposed-playbook-catalog)
 - [8. SSH, bastions, and host trust](#8-ssh-bastions-and-host-trust)
 - [9. Operation workflows](#9-operation-workflows)
+  - [Common CLI flag groups](#common-cli-flag-groups)
   - [Deploy](#deploy)
   - [Add-node](#add-node)
   - [Scale-out](#scale-out)
@@ -116,7 +117,7 @@ The design goals are:
 The planned interface is:
 
 ```text
-python deploy_scylla_vms.py OPERATION [OPTIONS]
+python deploy_scylla_vms.py [GLOBAL_FLAGS] OPERATION [OPERATION_FLAGS]
 ```
 
 `OPERATION` is an argparse subcommand backed by an operation registry, not a
@@ -147,6 +148,12 @@ must use the same registry, safety classes, journaling, and phase interfaces.
 
 ### Common arguments
 
+This subsection is a high-level summary. The normative argparse allowlist,
+requiredness, defaults, environment mapping, mutual exclusions, and
+operation-specific semantics are under "Operation workflows." A subcommand
+rejects every flag not explicitly included there; no operation accepts arbitrary
+Terraform arguments, playbook paths, Ansible extra vars, or a generic `--force`.
+
 - `--cloud-provider oci`: required or defaulted; argparse choices initially
   contain only `oci`. Unsupported providers fail validation before any command is
   run.
@@ -173,8 +180,8 @@ must use the same registry, safety classes, journaling, and phase interfaces.
   block-volume layout inputs. Provider/version validation may narrow accepted
   combinations.
 - `--scylla-block-volume-retention {delete,retain}`: disposition after safe node
-  removal/full destroy; default must be chosen and documented before
-  implementation rather than inferred during destruction.
+  removal/full destroy; required whenever Block Volume or `auto` fallback can
+  be selected rather than inferred during destruction.
 - `--state-dir PATH`: absolute or user-expanded application state root. This
   overrides `DEPLOY_SCYLLA_VMS_STATE_DIR`; otherwise the platform-aware default
   described under "Per-cluster state and concurrency" is used.
@@ -951,7 +958,206 @@ instead of pretending to plan/apply or seek unnecessary confirmation. A phase
 records durable non-secret completion evidence so an interrupted operation can
 safely resume after revalidation.
 
+### Common CLI flag groups
+
+The invocation grammar is
+`python deploy_scylla_vms.py [GLOBAL_FLAGS] OPERATION [OPERATION_FLAGS]`.
+Argparse may technically accept global flags only before the subcommand; help
+examples must use that canonical order. Non-secret values resolve CLI >
+documented environment variable > non-secret config file > built-in default.
+The state-root exception remains exactly CLI > environment > platform-aware
+default; `--config` cannot supply it.
+For an existing cluster, "Persisted" below means the value comes from canonical
+cluster metadata; a supplied CLI/env/config difference is a proposed change or
+identity assertion and must be explicitly supported by that operation, otherwise
+reconciliation refuses it. Environment values never silently retopologize,
+replace, relabel, wipe, or destroy an established cluster.
+
+All environment-capable booleans use explicit enum strings such as
+`enabled`/`disabled`; action flags are CLI-only. Environment values are parsed
+with the same type/range/normalization rules as CLI values. An unset variable is
+absent, not an empty string; empty strings are invalid. Repeatable mappings are
+CLI/config-only unless a deterministic environment encoding is explicitly
+listed. Secret credentials, SSH private keys, passwords, CHAP values, and tokens
+remain environment-only inputs handled by the secrets contract and have no CLI
+flags or non-secret config keys.
+
+#### Core flags (`core`)
+
+Every operation accepts exactly these global selection/output flags:
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--cloud-provider` | Enum; initially `oci` | `oci` | `DEPLOY_SCYLLA_VMS_CLOUD_PROVIDER` | Select provider adapter; unsupported values fail before state access. |
+| `--cluster-name` | Validated `[a-z][a-z0-9-]{0,62}` string | Required; no default | `DEPLOY_SCYLLA_VMS_CLUSTER_NAME` | Select one canonical cluster root/identity. |
+| `--state-dir` | Absolute or user-expandable path | Platform-aware state root | `DEPLOY_SCYLLA_VMS_STATE_DIR` | Override canonical application state root. |
+| `--config` | Readable path to non-secret config | Unset | `DEPLOY_SCYLLA_VMS_CONFIG` | Load schema-validated non-secret defaults only. |
+| `--log-level` | `debug`, `info`, `warning`, or `error` | `info` | `DEPLOY_SCYLLA_VMS_LOG_LEVEL` | Set redacted diagnostic verbosity. |
+| `--json` | Action boolean | `false` | No | Emit stable machine-readable events instead of human output. |
+| `--lock-timeout-seconds` | Finite float, `>= 0` | `30` | `DEPLOY_SCYLLA_VMS_LOCK_TIMEOUT_SECONDS` | Bound cluster-lock acquisition; `0` means fail immediately. |
+| `--non-interactive` | Action boolean | `false` | No | Disable prompts; does not authorize mutation and fails if required acknowledgements are absent. |
+
+#### Mutating execution flags (`mutate`)
+
+Mutating operations add this group:
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--dry-run` | Action boolean | `false` | No | Resolve/reconcile and run permitted read-only discovery only; create no saved plan or mutation. |
+| `--plan` | Action boolean | `false` | No | Produce operation-appropriate protected Terraform plans where infrastructure is in scope and bounded Ansible previews where safe, then stop. |
+| `--yes` | Action boolean | `false` | No | Accept ordinary reviewed mutation prompts; never satisfies exact destructive/wipe/recreate acknowledgements. |
+| `--operation-timeout-seconds` | Positive integer seconds | `3600` | `DEPLOY_SCYLLA_VMS_OPERATION_TIMEOUT_SECONDS` | Bound one operation; narrower phase timeouts may be lower. |
+
+`--dry-run` and `--plan` are mutually exclusive. `--non-interactive` without
+`--yes` is valid for read-only/plan-only work, but an execution that reaches a
+prompt fails rather than assuming approval. Destructive execution requires
+the `destructive` group plus the operation's exact confirmation value even with
+`--yes`.
+
+#### Destructive authorization flags (`destructive`)
+
+Only operations explicitly marked destructive accept this additional group:
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--allow-destructive` | Action boolean | `false`; required for destructive execution, optional for dry-run/plan | No | Acknowledge the operation class without bypassing target/drift/health checks. |
+
+This is not a generic force control. It authorizes nothing without the exact
+operation-specific target confirmation, and it cannot authorize storage wipe or
+stateless-host recreation.
+
+#### OCI context flags (`oci-context`)
+
+`deploy` requires resolved OCI location values. Existing-cluster operations use
+persisted values and treat supplied values as identity assertions:
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--oci-region` | OCI region key string | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_OCI_REGION` | Select/assert the OCI region. |
+| `--oci-compartment-id` | OCI compartment OCID | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_OCI_COMPARTMENT_ID` | Select/assert the managed compartment. |
+| `--oci-auth-mode` | `api-key`, `instance-principal`, or `resource-principal` | Required; no implicit profile | `DEPLOY_SCYLLA_VMS_OCI_AUTH_MODE` | Select an approved auth flow without exposing credentials. |
+
+Auth mode selects which separately documented environment-only secrets/principal
+context are required. There is no `--oci-profile`, private-key, passphrase, or
+token flag.
+
+#### Network and SSH provisioning flags (`network`)
+
+Only operations permitted to create/reconcile network or stateless compute
+accept this group:
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--network-mode` | `create` or `existing` | `create` on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_NETWORK_MODE` | Choose managed network creation versus supplied VCN/subnets. |
+| `--oci-vcn-id` | VCN OCID | Required with `existing`; unset with `create` unless adopting is separately designed | `DEPLOY_SCYLLA_VMS_OCI_VCN_ID` | Select an existing VCN. |
+| `--oci-subnet` | Repeatable `ROLE=OCID`; roles `scylla`, `manager`, `monitoring`, `jump-host` | Required for each deployed role with `existing`; unset with `create` | No | Map roles to existing subnets without comma parsing. |
+| `--operator-cidr` | Repeatable canonical IPv4/IPv6 CIDR | Required when policy creates operator ingress; no default | No | Bound SSH/approved operator endpoint ingress. |
+| `--ssh-user` | Non-empty OS user string | Image/provider-derived on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_SSH_USER` | Set/assert remote login user. |
+| `--ssh-public-key-path` | Readable public-key file path | Required when creating hosts unless provider bootstrap supplies an approved key | `DEPLOY_SCYLLA_VMS_SSH_PUBLIC_KEY_PATH` | Supply public bootstrap material only. |
+
+`--network-mode existing` requires `--oci-vcn-id` and one unique
+`--oci-subnet ROLE=OCID` for every role with a nonzero host count. `create`
+forbids those existing-resource selectors. Private-key input has no CLI flag.
+
+#### Topology and placement flags (`topology`)
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--zone` | Repeatable OCI zone/availability-domain string | Required on deploy; no default | No | Declare each allowed placement zone once. |
+| `--nodes-per-zone` | Repeatable `ZONE=COUNT`, integer `COUNT >= 0` | Required on deploy for every zone | No | Define desired Scylla count by exact zone key. |
+| `--scylla-datacenter` | Normalized topology name | Provider-derived when unset on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_SCYLLA_DATACENTER` | Set/assert the one Scylla datacenter label. |
+| `--scylla-rack` | Repeatable `ZONE=RACK` | Provider-derived for omitted deploy zones; otherwise Persisted | No | Set/assert deterministic zone-to-rack mapping. |
+| `--jump-host-count` | Integer `>= 0` | `0` on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_JUMP_HOST_COUNT` | Set number of jump hosts; zero is distinct from unset. |
+
+Zone/count and zone/rack keys must match the declared zone after provider
+canonicalization; duplicates, unknown/missing keys, ambiguous aliases, and comma
+lists are invalid. Lifecycle operations cannot use this group to relabel
+existing Scylla nodes.
+
+#### Instance shape flags (`shapes`)
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--scylla-instance-type` | OCI shape string | Required on deploy; new nodes otherwise Persisted | `DEPLOY_SCYLLA_VMS_SCYLLA_INSTANCE_TYPE` | Select/assert Scylla compute shape. |
+| `--manager-instance-type` | OCI shape string | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MANAGER_INSTANCE_TYPE` | Select/assert Manager shape. |
+| `--monitoring-instance-type` | OCI shape string | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MONITORING_INSTANCE_TYPE` | Select/assert monitoring shape. |
+| `--jump-host-instance-type` | OCI shape string | Required when jump-host count is positive; otherwise unset/Persisted | `DEPLOY_SCYLLA_VMS_JUMP_HOST_INSTANCE_TYPE` | Select/assert jump-host shape. |
+
+There are no hard-coded OCI shape defaults. Provider capability validation
+occurs before planning, and a lifecycle override is accepted only where the
+subcommand explicitly allows replacement/new-host configuration.
+
+#### Scylla storage flags (`scylla-storage`)
+
+These configure only newly provisioned Scylla data devices. Existing nodes
+derive the finalized policy/manifest from cluster state; supplied differences
+are blocked unless the operation explicitly defines replacement/migration.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--scylla-storage-backend` | `auto`, `local-nvme`, or `block-volume` | `auto` on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_BACKEND` | Request backend before initialization. |
+| `--scylla-storage-min-device-count` | Integer `>= 1` | Required for `auto`/`local-nvme`; unset for explicit block | `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_DEVICE_COUNT` | Set local-device adequacy floor. |
+| `--scylla-storage-min-total-gib` | Positive integer GiB | Required for `auto`/`local-nvme`; unset for explicit block | `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_TOTAL_GIB` | Set usable local-capacity floor. |
+| `--scylla-storage-layout` | `single` or `raid0` | `single` for one device; required for multiple | `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_LAYOUT` | Select an approved manifest layout. |
+| `--scylla-block-volume-count` | Integer `>= 1` | Required whenever block or `auto` fallback is possible | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_COUNT` | Declare exact OCI data-volume count. |
+| `--scylla-block-volume-size-gib` | Positive integer GiB per volume | Required whenever block or fallback is possible | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_SIZE_GIB` | Declare exact volume capacity. |
+| `--scylla-block-volume-vpus-per-gb` | Provider-valid integer | Required whenever block or fallback is possible | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_VPUS_PER_GB` | Declare performance tier without inferred claims. |
+| `--scylla-block-volume-attachment-type` | `iscsi` or `paravirtualized` | Required whenever block or fallback is possible | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_ATTACHMENT_TYPE` | Select validated attachment capability. |
+| `--scylla-block-volume-retention` | `retain` or `delete` | Required whenever block or fallback is possible | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_RETENTION` | Persist default node-removal disposition. |
+| `--scylla-block-volume-key-id` | KMS key OCID | Unset means OCI-managed at-rest key | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_KEY_ID` | Select non-secret customer-key identifier. |
+| `--scylla-block-volume-in-transit-encryption` | `enabled` or `disabled` | `disabled` pending provider/shape validation | `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_IN_TRANSIT_ENCRYPTION` | Request transport encryption explicitly. |
+| `--scylla-block-volume-chap` | `enabled` or `disabled` | `disabled`; `enabled` refused until secret handoff is designed | No | Select/refuse CHAP capability without accepting a credential. |
+
+For `auto`, local minimums and complete fallback Block Volume settings are
+required together because fallback cannot invent capacity, cost, or retention.
+Explicit `local-nvme` forbids Block Volume settings; explicit `block-volume`
+forbids local minimums and never consumes local NVMe. Layout count constraints,
+shape capabilities, and initialized-backend immutability are validated before
+mutation.
+
+#### Manager/monitoring storage flags (`service-storage`)
+
+Manager and monitoring each use one explicit Block Volume for application data
+in the initial topology; local NVMe is never selected automatically.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--manager-data-volume-size-gib` | Positive integer GiB | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_SIZE_GIB` | Size Manager application-data volume. |
+| `--manager-data-volume-vpus-per-gb` | Provider-valid integer | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_VPUS_PER_GB` | Set Manager volume performance. |
+| `--manager-data-volume-attachment-type` | `iscsi` or `paravirtualized` | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_ATTACHMENT_TYPE` | Select Manager attachment capability. |
+| `--manager-data-volume-retention` | `retain` or `delete` | `retain` on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_RETENTION` | Persist Manager volume disposition. |
+| `--manager-data-volume-key-id` | KMS key OCID | Unset means OCI-managed at-rest key | `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_KEY_ID` | Select non-secret Manager customer-key identifier. |
+| `--manager-data-volume-in-transit-encryption` | `enabled` or `disabled` | `disabled` pending provider/shape validation | `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_IN_TRANSIT_ENCRYPTION` | Request Manager transport encryption explicitly. |
+| `--monitoring-data-volume-size-gib` | Positive integer GiB | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_SIZE_GIB` | Size monitoring data volume. |
+| `--monitoring-data-volume-vpus-per-gb` | Provider-valid integer | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_VPUS_PER_GB` | Set monitoring volume performance. |
+| `--monitoring-data-volume-attachment-type` | `iscsi` or `paravirtualized` | Required on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_ATTACHMENT_TYPE` | Select monitoring attachment capability. |
+| `--monitoring-data-volume-retention` | `retain` or `delete` | `retain` on deploy; otherwise Persisted | `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_RETENTION` | Persist monitoring volume disposition. |
+| `--monitoring-data-volume-key-id` | KMS key OCID | Unset means OCI-managed at-rest key | `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_KEY_ID` | Select non-secret monitoring customer-key identifier. |
+| `--monitoring-data-volume-in-transit-encryption` | `enabled` or `disabled` | `disabled` pending provider/shape validation | `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_IN_TRANSIT_ENCRYPTION` | Request monitoring transport encryption explicitly. |
+
 ### Deploy
+
+**CLI flags**
+
+Applies complete groups `core`, `mutate`, `oci-context`, `network`, `topology`,
+`shapes`, `scylla-storage`, and `service-storage`. `--cluster-name`, OCI
+location/auth, every declared zone/count, required shapes, SSH bootstrap input,
+and all conditionally required storage/network fields must resolve before
+planning. The `destructive` group is not accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--manager-count` | Integer; initially exactly `1` | `1` | `DEPLOY_SCYLLA_VMS_MANAGER_COUNT` | Make the initial separate Manager-host count explicit. |
+| `--monitoring-count` | Integer; initially exactly `1` | `1` | `DEPLOY_SCYLLA_VMS_MONITORING_COUNT` | Make the initial separate monitoring-host count explicit. |
+| `--manager-zone` | One declared zone | Deterministically derived from declared zones | `DEPLOY_SCYLLA_VMS_MANAGER_ZONE` | Place Manager without implying colocation. |
+| `--monitoring-zone` | One declared zone | Deterministically derived, preferring failure-domain separation | `DEPLOY_SCYLLA_VMS_MONITORING_ZONE` | Place monitoring separately where possible. |
+
+`--zone`, `--nodes-per-zone`, and `--scylla-rack` are independently repeatable;
+their key sets are validated as documented. `--dry-run` performs capability and
+configuration validation only. `--plan` may create saved Terraform plans and
+read-only guest previews but never applies or initializes storage. Execution
+prompts before each approved Terraform apply; `--non-interactive` requires
+`--yes`.
 
 **Required Ansible playbooks (execution order)**
 
@@ -1049,6 +1255,29 @@ safely resume after revalidation.
 
 ### Add-node
 
+**CLI flags**
+
+Applies `core`, `mutate`, `oci-context`, the Scylla-only
+`--scylla-instance-type` member of `shapes`, and `scylla-storage`. OCI, shape,
+and storage values default to Persisted new-node policy; supplied values apply
+only to this not-yet-created node and cannot alter existing nodes. `network`,
+`topology`, `service-storage`, and `destructive` are not accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--node-id` | New validated stable logical ID | Required; no default | No | Reserve exactly one non-reused node identity. |
+| `--zone` | One persisted canonical zone | Required; no default | No | Select exact placement/rack mapping. |
+| `--expected-rack` | Persisted normalized rack name | Persisted mapping for `--zone` | No | Assert, never override, the target rack. |
+| `--cleanup` | `run` or `defer` | `run` | No | Run cleanup after healthy bootstrap or journal an explicit deferral. |
+| `--bootstrap-timeout-seconds` | Positive integer seconds | `7200` | `DEPLOY_SCYLLA_VMS_BOOTSTRAP_TIMEOUT_SECONDS` | Bound bootstrap/streaming wait. |
+| `--wipe-storage` | Action boolean | `false` | No | Request separately confirmed reuse wipe before initialization. |
+| `--confirm-wipe-device` | Repeatable exact provider/by-id device identifier | Required for every detected device with `--wipe-storage`; otherwise forbidden | No | Bind wipe consent to the reconciled device set. |
+
+`--wipe-storage` and at least one `--confirm-wipe-device` are required together;
+the confirmations must exactly equal the preflight set. An unexpected signature
+without those flags fails. `--node-id` is never generated implicitly, preserving
+the single-explicit-identity distinction from `scale-out`.
+
 **Required Ansible playbooks (execution order)**
 
 - **1.** `ansible/playbooks/inventory-preflight.yml`,
@@ -1128,6 +1357,28 @@ safely resume after revalidation.
 
 ### Scale-out
 
+**CLI flags**
+
+Applies `core`, `mutate`, `oci-context`, the Scylla-only member of `shapes`, and
+`scylla-storage`. Shape/storage defaults are Persisted new-node policy. It does
+not accept `topology` as a whole: only the delta/desired flags below are legal,
+and new zones or rack/datacenter changes are refused. `network`,
+`service-storage`, and `destructive` are not accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--nodes-per-zone` | Repeatable `ZONE=DESIRED_COUNT`, integer `>= 0` | Exactly one topology family required | No | Set final counts for persisted zones. |
+| `--add-nodes-per-zone` | Repeatable `ZONE=ADD_COUNT`, integer `>= 1` | Exactly one topology family required | No | Express positive per-zone additions without calculating totals. |
+| `--node-id` | Repeatable `ZONE=NEW_LOGICAL_ID` | Generated durable IDs when omitted; if supplied, count must equal delta | No | Predeclare stable IDs for automation/audit. |
+| `--max-new-nodes` | Integer `>= 1` | `1` | No | Refuse a resolved delta larger than the acknowledged bound. |
+| `--cleanup` | `run` or `defer` | `run` | No | Complete or explicitly journal post-add cleanup. |
+| `--bootstrap-timeout-seconds` | Positive integer seconds | `7200` | `DEPLOY_SCYLLA_VMS_BOOTSTRAP_TIMEOUT_SECONDS` | Bound each serial bootstrap gate. |
+
+`--nodes-per-zone` and `--add-nodes-per-zone` are mutually exclusive and one
+family is required. Every mapping key must be a persisted zone, duplicate keys
+are invalid, and decreases are refused. Nodes remain serial initially regardless
+of `--max-new-nodes`; that flag bounds total scope, not concurrency.
+
 **Required Ansible playbooks (execution order)**
 
 - **1.** `ansible/playbooks/inventory-preflight.yml`,
@@ -1196,6 +1447,35 @@ safely resume after revalidation.
    on rerun.
 
 ### Replace-node
+
+**CLI flags**
+
+Applies `core`, `mutate`, `destructive`, `oci-context`, the Scylla-only member
+of `shapes`, and `scylla-storage`. Shape/storage values default to the failed
+node's persisted policy and generation; a backend/datacenter/rack change is not
+accepted. `network`, `topology`, and `service-storage` are not accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--node-id` | Existing stable logical ID | Required; no default | No | Select the failed logical node. |
+| `--failed-host-id` | Scylla Host ID/UUID | Required; no default | No | Bind replacement to observed dead membership identity. |
+| `--reason` | Non-empty bounded text | Required; no default | No | Journal operator replacement rationale. |
+| `--storage-source` | `new` or `reuse-retained` | `new` | No | Select new media or explicitly validated retained Block Volumes. |
+| `--retained-volume-id` | Repeatable Block Volume OCID | Required with `reuse-retained`; otherwise forbidden | No | Identify exact retained media; never infer attachment candidates. |
+| `--old-volume-disposition` | `policy`, `retain`, or `delete` | `policy` from failed node's manifest | No | Resolve old Block Volumes when new media is selected; local NVMe is always ephemeral. |
+| `--wipe-storage` | Action boolean | Required with `reuse-retained`; otherwise `false` | No | Require retained media to be validated then cleared before replacement bootstrap. |
+| `--confirm-wipe-device` | Repeatable exact provider/by-id identifier | Required exact preflight set with `--wipe-storage` | No | Bind destructive media reuse consent. |
+| `--repair-mode` | `auto`, `required`, or `skip-if-supported` | `auto` | No | Select target-version post-replacement repair policy. |
+| `--replacement-timeout-seconds` | Positive integer seconds | `7200` | `DEPLOY_SCYLLA_VMS_REPLACEMENT_TIMEOUT_SECONDS` | Bound replacement streaming/health gates. |
+| `--confirm-replace-node` | Exact value of `--node-id` | Interactive prompt if unset; required with `--non-interactive` execution | No | Confirm one replacement target independently of `--yes`. |
+
+`reuse-retained` requires all retained-volume and wipe fields together, requires
+`--old-volume-disposition retain`, and still must pass ownership/signature
+checks; it never starts ScyllaDB on stale data. With `storage-source=new`, old
+disposition must resolve explicitly before apply.
+`--allow-destructive` and exact `--confirm-replace-node` are required before the
+replacement Terraform apply. Plan/dry-run may omit the confirmation and never
+wipe or replace.
 
 **Required Ansible playbooks (execution order)**
 
@@ -1283,6 +1563,26 @@ safely resume after revalidation.
 
 ### Destroy-node
 
+**CLI flags**
+
+Applies `core`, `mutate`, `destructive`, and `oci-context`. All topology,
+provider-resource, and storage-policy facts derive from Persisted state.
+`network`, `topology`, `shapes`, `scylla-storage`, and `service-storage` are not
+accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--node-id` | Existing stable logical ID | Required; no default | No | Select exactly one node; never select by IP/list index. |
+| `--removal-mode` | `live` or `dead` | Required; no default | No | Choose decommission versus unavailable-node procedure. |
+| `--failed-host-id` | Scylla Host ID/UUID | Required with `dead`; forbidden with `live` | No | Bind dead removal to observed ring identity. |
+| `--volume-disposition` | `policy`, `retain`, or `delete` | `policy` from persisted manifest | No | Resolve Block Volume handling; local NVMe remains ephemeral. |
+| `--decommission-timeout-seconds` | Positive integer seconds | `7200` | `DEPLOY_SCYLLA_VMS_DECOMMISSION_TIMEOUT_SECONDS` | Bound logical removal/streaming wait. |
+| `--confirm-destroy-node` | Exact value of `--node-id` | Interactive prompt if unset; required with `--non-interactive` execution | No | Confirm the exact node separately from general approval. |
+
+Execution requires `--allow-destructive`, exact node confirmation, and a
+resolved volume disposition. No environment variable may select the node,
+live/dead mode, disposition override, or acknowledgement.
+
 **Required Ansible playbooks (execution order)**
 
 - **1.** `ansible/playbooks/inventory-preflight.yml`,
@@ -1354,6 +1654,31 @@ safely resume after revalidation.
 
 ### Scale-in
 
+**CLI flags**
+
+Applies `core`, `mutate`, `destructive`, and `oci-context`. It accepts only the
+contraction selectors below; all other topology/storage settings are Persisted.
+`network`, `topology`, `shapes`, `scylla-storage`, and `service-storage` are not
+accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--nodes-per-zone` | Repeatable `ZONE=DESIRED_COUNT`, integer `>= 0` | Exactly one contraction family required | No | Calculate candidates from lower final counts. |
+| `--remove-node` | Repeatable stable logical ID | Exactly one contraction family required | No | Provide an explicit removal set. |
+| `--selection-policy` | `highest-ordinal` | `highest-ordinal`; valid only with desired counts | No | Make deterministic candidate selection reviewable. |
+| `--max-remove-nodes` | Integer `>= 1` | `1` | No | Refuse a larger contraction than explicitly bounded. |
+| `--removal-mode` | Repeatable `NODE_ID=live\|dead` | Required for every selected candidate before execution | No | Prevent silent inference of removal procedure. |
+| `--failed-host-id` | Repeatable `NODE_ID=HOST_UUID` | Required for every `dead` candidate; forbidden for `live` | No | Bind unavailable removal to observed Host IDs. |
+| `--volume-disposition` | Repeatable `NODE_ID=policy\|retain\|delete` | `policy` for omitted selected nodes | No | Resolve per-node Block Volume handling. |
+| `--decommission-timeout-seconds` | Positive integer seconds | `7200` | `DEPLOY_SCYLLA_VMS_DECOMMISSION_TIMEOUT_SECONDS` | Bound each serial removal. |
+| `--confirm-scale-in` | Exact cluster name | Interactive exact prompt if unset; required with `--non-interactive` execution | No | Confirm the complete reviewed contraction. |
+
+`--nodes-per-zone` and `--remove-node` are mutually exclusive and one is
+required. Desired counts must strictly decrease and explicit IDs must match the
+previewed safe candidates. Execution requires mode for every candidate,
+`--allow-destructive`, and exact cluster confirmation; plan mode may stop before
+mode/confirmation completion.
+
 **Required Ansible playbooks (execution order)**
 
 - **1.** `ansible/playbooks/inventory-preflight.yml`,
@@ -1409,6 +1734,25 @@ safely resume after revalidation.
    partial-result status.
 
 ### Destroy
+
+**CLI flags**
+
+Applies `core`, `mutate`, `destructive`, and `oci-context`. All topology and
+resource identities derive from Persisted state. `network`, `topology`,
+`shapes`, `scylla-storage`, and `service-storage` are not accepted.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--block-volume-disposition` | `policy`, `retain`, or `delete` | `policy` per volume manifest | No | Resolve cluster data-volume disposition without affecting local-NVMe erasure. |
+| `--shared-resource-disposition` | `retain` or `delete-if-owned` | `retain` | No | Protect shared VCN/network/external resources by default. |
+| `--state-retention` | `keep` | `keep`; no delete value in initial CLI | No | Preserve converged state/tombstone for audit and residual-resource recovery. |
+| `--diagnostic-retention` | `sanitized` or `protected-full` | `sanitized` | No | Select retained pre-destroy evidence handling. |
+| `--confirm-destroy-cluster` | Exact `CLUSTER_NAME:CLUSTER_UUID` | Interactive exact prompt if unset; required with `--non-interactive` execution | No | Bind irreversible approval to both cluster identifiers. |
+
+Execution requires `--allow-destructive` and exact cluster confirmation. `--yes`
+does not supply that value. State cannot be deleted through this operation, and
+no environment/config value can choose a more destructive retention outcome or
+provide confirmation.
 
 **Required Ansible playbooks (execution order)**
 
@@ -1486,6 +1830,30 @@ safely resume after revalidation.
    retention policy; never silently erase lifecycle evidence.
 
 ### Redeploy
+
+**CLI flags**
+
+Always applies `core`, `mutate`, and `oci-context`. Conditional shared flags are:
+`network` only with `--scope cluster --infrastructure reconcile`; Manager,
+monitoring, or jump-host members of `shapes` plus `service-storage` only for the
+corresponding `recreate-stateless` host. `scylla-storage`, Scylla shape changes,
+and `topology` are never accepted; Scylla reprovision delegates to
+`replace-node`. The `destructive` group is accepted only for
+`recreate-stateless`.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--scope` | `service`, `host`, or `cluster` | Required; no default | No | Bound convergence/reconciliation scope. |
+| `--target-host` | Stable logical host ID | Required with `host`; forbidden with other scopes | No | Select one host without using IP/provider ID. |
+| `--component` | Repeatable enum: `base`, `scylla`, `manager-agent`, `monitoring-agent`, `manager-server`, `monitoring-stack`, `monitoring-targets`, `jump-host`, `all` | Required with `service`; role-derived with host; `all` with cluster | No | Select allowlisted playbook/tag responsibilities. |
+| `--infrastructure` | `configuration-only`, `reconcile`, or `recreate-stateless` | `configuration-only` | No | Prevent implicit Terraform replacement. |
+| `--restart-policy` | `never`, `if-required`, or `always` | `if-required` | No | Bound service restart behavior. |
+| `--confirm-recreate-host` | Exact value of `--target-host` | Required for `recreate-stateless`; otherwise forbidden | No | Authorize only the reviewed stateless host recreation. |
+
+`recreate-stateless` requires `scope=host`, an eligible non-Scylla role,
+`--allow-destructive`, and exact host confirmation. `--component all` cannot be
+combined with another component. No flag selects arbitrary playbooks, tags,
+extra vars, Terraform targets, or commands.
 
 **Required Ansible playbooks (execution order)**
 
@@ -1566,6 +1934,26 @@ safely resume after revalidation.
 
 ### Refresh-monitoring
 
+**CLI flags**
+
+Applies `core`, `mutate`, and `oci-context`. It does not accept `destructive`,
+`network`, `topology`, `shapes`, or either storage group; Terraform
+infrastructure mutation is forbidden.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--target` | Repeatable `targets`, `monitoring-stack`, or `manager-integration` | `targets,monitoring-stack` | No | Select bounded monitoring responsibilities. |
+| `--source` | `terraform` | `terraform`; no alternate source initially | No | Require targets from reconciled Terraform output/inventory. |
+| `--service-action` | `check-only`, `reload-if-supported`, or `restart` | `reload-if-supported` | No | Select validation/reload/restart behavior explicitly. |
+| `--stale-target-policy` | `fail` or `remove` | `fail` | No | Refuse stale targets by default instead of silently deleting config. |
+| `--confirm-monitoring-restart` | Action boolean | `false`; required for non-interactive `restart` | No | Narrowly acknowledge monitoring service restart. |
+| `--monitoring-timeout-seconds` | Positive integer seconds | `600` | `DEPLOY_SCYLLA_VMS_MONITORING_TIMEOUT_SECONDS` | Bound reload/restart/discovery health checks. |
+
+`--confirm-monitoring-restart` is forbidden unless `service-action=restart`;
+interactive restart prompts when it is absent. `check-only`, `--dry-run`, and
+`--plan` make no configuration change; `--plan` may use Ansible check/diff only
+as an estimate.
+
 **Required Ansible playbooks (execution order)**
 
 - **1.** `ansible/playbooks/inventory-preflight.yml`,
@@ -1613,6 +2001,33 @@ safely resume after revalidation.
    Terraform state unchanged.
 
 ### Upgrade-os
+
+**CLI flags**
+
+Applies `core`, `mutate`, and `oci-context`. The `destructive` group is accepted
+only when the resolved strategy reprovisions at least one host. Shape, network,
+topology, and storage settings derive from Persisted state and are not accepted;
+this operation cannot combine resizing, relabeling, or backend migration.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--strategy` | `auto`, `in-place`, or `reprovision` | `auto` | No | Select validated per-host OS path; `auto` may decide but never authorize reprovision. |
+| `--target-role` | Repeatable `scylla`, `manager`, `monitoring`, or `jump-host` | Exactly one target-selector family required | No | Select all eligible hosts in explicit roles. |
+| `--target-host` | Repeatable stable logical host ID | Exactly one target-selector family required | No | Select explicit hosts. |
+| `--target-os-version` | Version/release string from approved matrix | Required; no default | `DEPLOY_SCYLLA_VMS_TARGET_OS_VERSION` | Declare intended guest OS result. |
+| `--package-channel` | Approved repository/channel identifier | Required for in-place or potentially in-place `auto`; forbidden for reprovision-only | `DEPLOY_SCYLLA_VMS_OS_PACKAGE_CHANNEL` | Select reviewed packages without arbitrary commands. |
+| `--image-id` | OCI image OCID | Required for `reprovision`; optional candidate for `auto`; forbidden for in-place | `DEPLOY_SCYLLA_VMS_OCI_IMAGE_ID` | Select reviewed immutable image. |
+| `--max-unavailable` | Integer; initially exactly `1` | `1` | No | Enforce one-host-at-a-time rollout. |
+| `--health-timeout-seconds` | Positive integer seconds | `1800` | `DEPLOY_SCYLLA_VMS_HEALTH_TIMEOUT_SECONDS` | Bound post-host role/cluster health gate. |
+| `--reboot-timeout-seconds` | Positive integer seconds | `1800` | `DEPLOY_SCYLLA_VMS_REBOOT_TIMEOUT_SECONDS` | Bound disconnect/reconnect/reboot validation. |
+| `--resume-operation` | Existing operation UUID | Unset; required to resume an interrupted journal | No | Resume only the named checkpoint after full revalidation. |
+| `--confirm-reprovision-host` | Repeatable exact stable host ID | Required for every host resolved to reprovision before execution | No | Authorize immutable replacement one host at a time. |
+
+`--target-role` and `--target-host` are mutually exclusive and one family is
+required. `strategy=auto` may plan a mix, but execution stops unless every
+reprovision host has exact confirmation and `--allow-destructive`; in-place
+hosts do not require destructive authorization. `--resume-operation` cannot
+change targets, strategy, image/channel, or policy from the journal.
 
 **Required Ansible playbooks (execution order)**
 
@@ -1699,6 +2114,27 @@ safely resume after revalidation.
 
 ### Check-jump-hosts
 
+**CLI flags**
+
+Applies only `core` and `oci-context`. It rejects `mutate`, `destructive`,
+`network`, `topology`, `shapes`, and storage groups, including `--dry-run`,
+`--plan`, `--yes`, and every confirmation flag, because the operation is already
+read-only.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--jump-host` | Repeatable stable jump-host logical ID | Empty list means all persisted jump hosts | No | Limit path checks to named bastions. |
+| `--destination` | Repeatable `assigned`, `scylla`, `manager`, `monitoring`, or `all` | `assigned` | No | Select inventory-derived destination sets. |
+| `--depth` | `bastion`, `route`, or `all-targets` | `route` | No | Bound operator-to-bastion versus end-to-end probing. |
+| `--destination-check` | Repeatable `ROLE=PORT`, validated role and integer port `1..65535` | Empty list means SSH only | No | Add policy-approved TCP reachability checks without arbitrary hosts. |
+| `--connect-timeout-seconds` | Positive float seconds | `10` | `DEPLOY_SCYLLA_VMS_SSH_CONNECT_TIMEOUT_SECONDS` | Bound each SSH connection attempt. |
+| `--check-timeout-seconds` | Positive integer seconds | `300` | `DEPLOY_SCYLLA_VMS_JUMP_CHECK_TIMEOUT_SECONDS` | Bound the complete read-only check. |
+
+`all` cannot be combined with another destination. Every destination comes from
+validated inventory; raw addresses, arbitrary commands, host-key replacement,
+firewall repair, and confirmation/mutation flags are not accepted. `--json` and
+`--log-level` come from `core`.
+
 **Required Ansible playbooks (execution order)**
 
 - **1.** `ansible/playbooks/inventory-preflight.yml` in read-only/check mode.
@@ -1768,9 +2204,9 @@ JSON is schema-validated before use.
   does not apply.
 - Mutating operations summarize cluster UUID, topology delta, resources, and
   health checks before confirmation.
-- `--yes` is allowed for controlled automation only with an additional explicit
-  destructive-operation opt-in; it cannot bypass drift, identity, or health
-  gates.
+- For destructive automation, `--yes` is allowed only with the additional
+  operation-specific destructive opt-in/confirmation; it cannot bypass drift,
+  identity, or health gates.
 - Storage wipe/reuse requires a separate manifest-bound confirmation and exact
   device set after root/signature/ownership checks. General `--yes`, a Terraform
   confirmation, or an Ansible tag cannot authorize a wildcard/destructive wipe.
@@ -1841,9 +2277,27 @@ journal the phase, and return a conventional nonzero cancellation status.
 
 ### Unit tests
 
-- argparse subcommands and provider choices;
-- CLI/environment/config/default precedence;
-- secret redaction and absence of secret CLI options;
+- argparse subcommands, canonical global-before-subcommand syntax, generated
+  help, and exact per-operation flag/group allowlists, including rejection of
+  every unrelated flag;
+- CLI/environment/config/default/Persisted precedence, empty-versus-unset,
+  required-without-default, explicit numeric zero, finite range checks, and
+  strict environment enum/boolean parsing;
+- repeatable `ZONE=VALUE`, `ROLE=VALUE`, and `NODE_ID=VALUE` parsing,
+  canonicalization, duplicate detection, mutual exclusions, exactly-one-family
+  constraints, required-together fields, and forbidden combinations;
+- secret redaction and absence/rejection of credential, private-key, password,
+  token, CHAP-value, arbitrary extra-var/playbook/Terraform-argument, and generic
+  force CLI inputs;
+- proof that `--yes`, destructive target IDs/modes, exact confirmations, wipe/
+  recreate/relabel consent, saved-plan identity, and resume identity cannot come
+  from environment or config;
+- `--non-interactive` failure without the required ordinary and exact
+  acknowledgements; `--dry-run`/`--plan` mutual exclusion and operation-specific
+  no-mutation behavior;
+- existing-cluster Persisted defaults and refusal to interpret CLI/env
+  differences as implicit retopology, relabeling, backend migration, or
+  infrastructure replacement;
 - cluster-name validation, traversal/symlink defenses, and canonical path safety;
 - state-root precedence, Terraform directory binding, unexpected-state
   detection, and migration refusal paths;
@@ -1899,6 +2353,10 @@ change a real ScyllaDB cluster.
   on an undefined/unmapped playbook, unsafe order, missing explicit inventory or
   limit, unapproved extra variable, stale inventory digest, or a mutating
   playbook selected for read-only `check-jump-hosts`.
+- Parser-registry contract tests snapshot each subcommand's help/JSON schema and
+  assert its exact common groups, operation flags, environment names, defaults,
+  requiredness, and deprecation-free spelling. Documentation examples parse
+  through the same registry.
 - Terraform `fmt`, `validate`, and plan against mocked/test modules where
   practical.
 - Ansible syntax checks, lint, check mode, and idempotence in disposable local
@@ -1930,12 +2388,14 @@ implementation and packaging files exist.
 
 ### Phase 0 — contracts and scaffold
 
-- Finalize schemas, supported Python/Terraform/Ansible/OCI versions, CLI help,
-  exit codes, threat model, and topology policy.
+- Finalize schemas, supported Python/Terraform/Ansible/OCI versions, normative
+  per-operation CLI registry/help, exit codes, threat model, and topology policy.
 - Acceptance: fixture-backed examples cover zero/multiple jump hosts, uneven
   zones, manager/monitor separation, explicit and provider-default
   datacenter/rack mappings, role-specific storage defaults, all three Scylla
-  storage modes, and configuration precedence.
+  storage modes, and configuration precedence. Every subcommand accepts only
+  its documented groups/flags, every environment value maps to one documented
+  non-secret field, and destructive acknowledgements have no env/config path.
 
 ### Phase 1 — safe CLI and state foundation
 
