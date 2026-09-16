@@ -628,29 +628,51 @@ safely resume after revalidation.
 2. Validate environment-supplied credentials, OCI region/zones, node counts,
    explicit/defaulted Scylla datacenter and zone-to-rack mapping, shapes, quotas
    where queryable, storage, SSH route, and least-privilege network intent before
-   creating resources.
+   creating resources. Validate resource fields against the
+   [OCI Terraform provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs)
+   and validate placement/network security against OCI's
+   [regions and availability domains](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm),
+   [VCN networking](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/overview.htm),
+   and [network security groups](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/networksecuritygroups.htm).
 3. Atomically create cluster metadata, stable cluster/host identities, desired
    topology including normalization algorithm/version and resolved
    datacenter/rack labels, and an operation journal; no Terraform apply occurs
    until those identifiers are durable.
 4. Stage Terraform inputs in the canonical cluster root, then run
-   init/validate and create a saved plan; display the role/zone/resource summary
-   and require confirmation before apply.
+   [Terraform initialization](https://developer.hashicorp.com/terraform/cli/commands/init),
+   validate, and a saved
+   [Terraform plan](https://developer.hashicorp.com/terraform/cli/commands/plan);
+   use the documented detailed exit codes to distinguish error/no-change/change,
+   display the role/zone/resource summary, and require confirmation before apply.
 5. Apply exactly the approved plan. On interruption or an uncertain provider
    result, stop at the infrastructure boundary, refresh Terraform state, and
-   resume only after the plan/state lineage is reconciled.
+   resume only after the plan/state lineage is reconciled; Terraform documents
+   that a failed [apply](https://developer.hashicorp.com/terraform/cli/commands/apply)
+   can leave partial changes and does not automatically roll them back.
 6. Read fresh Terraform JSON outputs, generate and validate Ansible inventory,
    reject identity/address/zone/datacenter/rack conflicts, and establish SSH host
-   trust and connectivity through the selected direct or bastion routes.
+   trust and connectivity through the selected direct or bastion routes. Follow
+   the machine-readable
+   [`terraform output -json` contract](https://developer.hashicorp.com/terraform/cli/commands/output)
+   plus [Terraform's JSON format](https://developer.hashicorp.com/terraform/internals/json-format)
+   and the [Ansible inventory guide](https://docs.ansible.com/ansible/latest/inventory_guide/index.html).
 7. Run idempotent base and ScyllaDB playbooks in topology-safe order, limit
    initial bootstrap concurrency, and wait for all expected nodes to join and
-   converge before continuing.
+   converge before continuing, using the
+   [official ScyllaDB Ansible integration](https://docs.scylladb.com/manual/stable/using-scylla/integrations/integration-ansible.html)
+   and current [ScyllaDB Ansible roles source](https://github.com/scylladb/scylla-ansible-roles);
+   execute through Ansible's documented
+   [playbook interface](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_intro.html).
 8. Configure the separate Manager and monitoring hosts, register the validated
    cluster, configure only explicitly requested repair/backup tasks, and
-   generate monitoring targets from stable identities.
+   generate monitoring targets from stable identities. Validate the selected
+   release against the [ScyllaDB Manager documentation](https://manager.docs.scylladb.com/stable/)
+   and [ScyllaDB Monitoring documentation](https://monitoring.docs.scylladb.com/stable/).
 9. Validate ScyllaDB membership, datacenter/rack placement, ring health,
    services, Manager registration, monitoring targets, and a no-op convergence
    preview; stop rather than compensate destructively for partial configuration.
+   Use the [ScyllaDB administrator procedures index](https://docs.scylladb.com/manual/stable/operating-scylla/)
+   for target-version health/status interfaces.
 10. Atomically record final desired/observed topology, Terraform state/output
     and plan digests, inventory digest, health evidence, and completed phases.
     Preserve the journal for safe repair/resume if any postcondition failed.
@@ -669,19 +691,34 @@ safely resume after revalidation.
    keyspace replication across the resolved datacenter/racks, seed/address
    policy, Manager task posture, and supported ScyllaDB add-node procedure.
    Reserve the requested durable host ID without renumbering existing nodes.
+   The [official add-node procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
+   requires existing nodes to be up and warns about rack/RF validity.
 4. Produce a saved Terraform plan for only the new host and necessary narrowly
    scoped dependencies; display provider ID/address expectations and require
-   confirmation before applying infrastructure.
+   confirmation before applying infrastructure. Model the full dependency graph
+   and treat the plan command's
+   [resource-targeting option](https://developer.hashicorp.com/terraform/cli/commands/plan)
+   as exceptional recovery behavior, not the normal way to isolate a node;
+   validate the instance/network resources against the
+   [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 5. Apply the plan, refresh Terraform JSON output, regenerate/validate inventory,
    and establish host-key trust and the selected SSH/bastion path for the new
-   host. Refuse any unrelated resource replacement.
+   host. Refuse any unrelated resource replacement, following Terraform's
+   [saved-plan apply semantics](https://developer.hashicorp.com/terraform/cli/commands/apply)
+   and Ansible's [SSH connection guidance](https://docs.ansible.com/ansible/latest/collections/ansible/builtin/ssh_connection.html).
 6. Apply base and ScyllaDB roles only to the new node, then bootstrap it using
    the version-appropriate procedure. Do not add another node concurrently
-   unless a future tested policy explicitly permits it.
+   unless a future tested policy explicitly permits it; the
+   [add-node guide](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
+   requires a matching ScyllaDB patch release and documents bootstrap status.
 7. Wait for token streaming/bootstrap completion and healthy membership; if
    configuration fails before join, repair or remove only the new infrastructure
    through a reviewed plan, but after ring mutation journal and resume rather
-   than attempting an automatic rollback.
+   than attempting an automatic rollback. Once the node reaches the documented
+   healthy state, perform/schedule the guide's required
+   [post-add cleanup](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
+   on old nodes, one at a time, and record completion before any later node
+   removal.
 8. Refresh Manager and monitoring configuration, validate the new node's
    exact datacenter/rack, zone, ownership, service, and scrape/management status,
    then persist the desired count, observed membership/topology,
@@ -699,23 +736,32 @@ safely resume after revalidation.
 3. Validate the resulting odd/asymmetric topology, failure-domain/replication
    goals and keyspace replication across the resolved datacenter/racks, quotas,
    network/storage capacity, bootstrap load, and cluster health. Choose a
-   deterministic, topology-safe node addition order.
+   deterministic, topology-safe node addition order under the
+   [ScyllaDB out-scale prerequisites](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html).
 4. Display a complete preview of the expansion and require confirmation for the
    full desired-topology delta. Partition execution into bounded batches or
    single nodes as required by bootstrap policy; after refreshing state, create
    a separate saved Terraform plan for each batch so no plan is partially
-   applied.
+   applied, following Terraform's
+   [plan/save workflow](https://developer.hashicorp.com/terraform/cli/commands/plan)
+   and the [OCI provider resource contracts](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 5. For each approved node/batch, apply exactly its saved infrastructure plan,
    refresh Terraform output and inventory, validate SSH identity/routes, run
    base and ScyllaDB playbooks, and wait for streaming plus ring-health gates
-   before planning the next addition.
+   before planning the next addition. The
+   [ScyllaDB add-node procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
+   governs version matching, bootstrap, and Up Normal validation.
 6. On failure, stop before the next node, retain the achieved intermediate
    desired/observed distinction, and resume from the journal after
    reconciliation; never destroy a node that has joined the ring as an automatic
    Terraform rollback.
 7. After all additions, regenerate Manager/monitoring targets once more and
    validate membership, token ownership, zone/rack distribution, services, and
-   the requested final counts.
+   the requested final counts. Run/schedule the documented cleanup on all nodes
+   required by the target-version procedure, one node at a time; current
+   multiple-add guidance says all nodes except the last node added. The
+   [official procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
+   states cleanup must finish before a later decommission/removal.
 8. Record each completed node boundary, final topology, plan/state/output and
    inventory digests, and health evidence so the expansion is idempotent on
    rerun.
@@ -732,24 +778,33 @@ safely resume after revalidation.
 3. Validate surviving-cluster health/capacity, consistency and failure-domain
    policy, repair/backup posture, and the exact replacement procedure supported
    by the target ScyllaDB version. Capture pre-change ring/token and address
-   evidence.
+   evidence. The [current stable dead-node replacement guide](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html)
+   requires topology quorum, a dead target, and matching ScyllaDB version.
 4. Preserve the tool's stable logical node identity and record a replacement
    generation, exact datacenter/rack labels, and zone while assigning a new
    provider resource ID. A request to move zone/rack/datacenter is not a
-   replacement and must be refused as an unsupported topology migration. Reuse
-   an address only when explicitly planned and supported; otherwise pass the old
-   identity or address to the version-appropriate Scylla replacement mechanism
-   so token ownership transfers safely. Never manually duplicate tokens or treat
-   this as an ordinary add.
+   replacement and must be refused as an unsupported topology migration. Do not
+   infer replacement identity from an IP address: use the target-version
+   procedure's node identifier. Current stable guidance uses the dead node's Host
+   ID and explicitly deprecates older address-based parameters; verify this
+   against the [version-specific replacement procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html).
+   Never manually duplicate tokens or treat this as an ordinary add.
 5. Create a saved Terraform replacement plan showing destroyed/created compute,
    storage, addresses, and retained data; report backup implications and require
-   target-ID plus cluster-ID confirmation before apply.
+   target-ID plus cluster-ID confirmation before apply. Validate compute/image
+   fields in the [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs)
+   and inspect the saved plan with Terraform's
+   [plan/apply workflow](https://developer.hashicorp.com/terraform/cli/commands/apply).
 6. Apply the infrastructure plan, refresh outputs, regenerate/validate
    inventory, and require explicit approval of the new SSH host key after
    correlating it to the new provider instance.
 7. Configure the replacement host and invoke the supported replacement
    bootstrap. Wait for streaming, token ownership, schema, and ring-health gates;
-   do not run another topology operation concurrently.
+   do not run another topology operation concurrently. Perform post-replacement
+   repair when required by the
+   [replacement guide](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html);
+   account for target-version repair-based node operations before deciding it
+   can be omitted.
 8. Once replacement has entered the ring, automatic rollback is prohibited.
    Journal the last verified phase and resume after reconciliation; failed
    pre-join infrastructure may be replanned only if the old-node evidence and
@@ -770,19 +825,31 @@ safely resume after revalidation.
 3. Verify cluster/ring health, post-removal replication and failure-domain
    safety by datacenter/rack, remaining capacity, keyspace replication,
    repair/backup and Manager-task posture, and the version-specific decommission
-   or failed-node removal procedure.
+   or failed-node removal procedure. Also require any prior scale-out cleanup to
+   be complete. The [official remove-node guide](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html)
+   documents disk-capacity/RF-rack checks and distinguishes a live decommission
+   from unavailable-node removal.
 4. Present the exact node/provider IDs, data/storage disposition, resulting
    topology, and ordered Scylla-then-Terraform plan; require destructive
    confirmation before changing ring membership.
 5. Disable or coordinate relevant Manager/monitoring activity, then decommission
-   a live node or perform the supported dead-node removal. Wait until membership
-   and token ownership prove the target is safely removed.
+   a live Up Normal node, or use the supported unavailable-node removal only
+   after recovery is exhausted. Wait until membership and token ownership prove
+   the target is safely removed. Current
+   [ScyllaDB removal guidance](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html)
+   recommends decommission for a running node and reserves `removenode` for a
+   permanently down node, with repair prerequisites unless the target version's
+   repair-based operation changes them.
 6. Treat successful ring removal as an irreversible resume boundary: record it
    before infrastructure deletion and never try to re-add the old VM
    automatically if later Terraform work fails.
 7. Refresh Terraform state, create and confirm a saved plan that removes only
    the target VM/volumes/attachments and approved dependencies, apply it, then
-   regenerate inventory from fresh outputs.
+   regenerate inventory from fresh outputs. Logical removal must already be
+   proven; use the [Terraform plan reference](https://developer.hashicorp.com/terraform/cli/commands/plan)
+   to review graph effects and do not use targeted destroy as a substitute for
+   ScyllaDB decommission/removal. Confirm OCI instance, VNIC, and volume effects
+   against the [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 8. Tombstone the logical ID, refresh Manager/monitoring, validate surviving
    ring/services/topology and absence of the provider resource, and record
    membership evidence plus state/output/inventory digests.
@@ -797,13 +864,19 @@ safely resume after revalidation.
 3. Validate the final odd/asymmetric topology, replication/failure-domain
    policy by datacenter/rack, keyspace replication, capacity, ring health,
    backup/repair posture, and Manager tasks. Refuse counts that would remove the
-   last required role/zone/rack capacity.
+   last required role/zone/rack capacity or begin before required post-add
+   cleanup is complete. Apply the
+   [ScyllaDB down-scale capacity and rack checks](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html)
+   to each candidate.
 4. Display every selected stable/provider ID, zone order, data/storage outcome,
    and final topology; allow explicit candidate override only after revalidation,
    then require confirmation for the complete contraction.
 5. Process one node at a time by invoking the `destroy-node` safety sequence:
    decommission/remove in Scylla first, durably record that ring boundary, then
-   apply the narrowly scoped Terraform deletion and refresh inventory.
+   apply the narrowly scoped Terraform deletion and refresh inventory. Follow
+   the [official live/dead removal distinction](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html);
+   Terraform VM deletion never substitutes for logical ring removal, and OCI
+   dependencies must match the [OCI provider plan](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 6. Stop on any failed health or capacity gate. Preserve the safely achieved
    intermediate topology and resume from the next journaled candidate after
    reconciliation; never continue deleting to force the requested count.
@@ -825,10 +898,16 @@ safely resume after revalidation.
    outputs, inventory, health, Manager tasks, monitoring targets, and resource
    IDs. Report independently verified backup status and all retained/external
    resources; never imply that Terraform destruction is a database backup.
+   Consult the [ScyllaDB administrator procedures index](https://docs.scylladb.com/manual/stable/operating-scylla/)
+   for version-specific shutdown/backup requirements.
 4. Plan the application-level shutdown order and create a saved Terraform
    destroy plan. Display the validated cluster name and UUID, complete resource
    inventory, storage/data loss, network/shared-resource effects, and diagnostic
-   retention policy.
+   retention policy. Create it with the documented
+   [`terraform plan -destroy` mode](https://developer.hashicorp.com/terraform/cli/commands/plan)
+   and an explicit output path; do not rely on an unsaved speculative plan.
+   Reconcile the resource set with the
+   [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 5. Require strong confirmation that includes the exact cluster name and UUID;
    noninteractive approval also requires the dedicated destructive opt-in and
    cannot bypass identity, drift, backup-policy, or plan checks.
@@ -836,15 +915,21 @@ safely resume after revalidation.
    any required final ScyllaDB service shutdown. Do not individually decommission
    every node unless the supported full-cluster procedure specifically requires
    it.
-7. Apply exactly the reviewed Terraform destroy plan. If interrupted or the
-   provider outcome is uncertain, retain state and journal, refresh/reconcile,
-   and produce a new destroy plan; do not delete state to make Terraform forget
-   residual resources.
+7. Apply exactly the reviewed saved destroy plan with
+   [`terraform apply PLAN_FILE`](https://developer.hashicorp.com/terraform/cli/commands/apply).
+   Do not switch to `terraform destroy` after approval because that convenience
+   command creates a new plan and does not accept the reviewed plan file, as
+   documented in the [destroy command reference](https://developer.hashicorp.com/terraform/cli/commands/destroy).
+   If interrupted or the provider outcome is uncertain, retain state and
+   journal, refresh/reconcile, and produce a new destroy plan; do not delete
+   state to make Terraform forget residual resources. Terraform infrastructure
+   deprovisioning does not make live ScyllaDB ring removal safe.
 8. Verify through Terraform state and provider queries that all planned
    resources are gone and report approved retained/shared resources. Terraform
    outputs/inventory may no longer be available after destruction, so use the
    protected pre-destroy snapshot for diagnostics rather than regenerating a
-   fictitious live inventory.
+   fictitious live inventory. Handle state as sensitive data under
+   [Terraform state guidance](https://developer.hashicorp.com/terraform/language/state).
 9. Mark the cluster destroyed and retain the converged Terraform state,
    sanitized diagnostics, tombstone, plan digest, and operation journal under
    the canonical cluster root. Remove only ephemeral credentials/generated
@@ -864,7 +949,11 @@ safely resume after revalidation.
 3. Produce a scope-specific preview: Ansible-only service convergence,
    Terraform no-op/reconciliation plus Ansible for infrastructure configuration,
    or an explicitly identified host reprovision. By default, `redeploy` means
-   reapply/reconcile, not destroy and recreate.
+   reapply/reconcile, not destroy and recreate. Use
+   [Ansible check/diff mode](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html)
+   only as a preview with documented limitations and use
+   [Terraform plan](https://developer.hashicorp.com/terraform/cli/commands/plan)
+   for infrastructure scope.
 4. For service scope, validate capacity and dependencies, confirm any restart,
    run the smallest idempotent playbook/tag set, and health-check before moving
    to another service or host.
@@ -872,10 +961,14 @@ safely resume after revalidation.
    roles. Reprovisioning a ScyllaDB node must delegate to `replace-node`; deleting
    it through a Terraform replacement plan is forbidden. Jump-host, Manager, and
    monitoring replacements require role-specific reachability/availability
-   plans and confirmation.
+   plans and confirmation. OCI image-based replacement must follow the
+   [OCI Compute image documentation](https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm)
+   and the [OCI provider's reviewed replacement plan](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 6. For cluster scope, apply only a reviewed Terraform plan and bounded Ansible
    convergence that preserve cluster UUID, stable node IDs, and state. Any
-   resource replacement is highlighted and separately confirmed.
+   resource replacement is highlighted and separately confirmed under
+   Terraform's [saved-plan apply semantics](https://developer.hashicorp.com/terraform/cli/commands/apply)
+   and the [ScyllaDB Ansible integration](https://docs.scylladb.com/manual/stable/using-scylla/integrations/integration-ansible.html).
 7. Journal each host/service boundary. On failure, stop further convergence,
    preserve already healthy changes, and resume only after fresh reconciliation;
    rollback is limited to an explicitly tested configuration rollback, never an
@@ -888,7 +981,9 @@ safely resume after revalidation.
 
 1. Acquire the cluster lock, read current Terraform state/output without an
    infrastructure apply, regenerate/validate inventory, and compare stable host
-   identities with live ScyllaDB membership.
+   identities with live ScyllaDB membership using the
+   [`terraform output -json` interface](https://developer.hashicorp.com/terraform/cli/commands/output)
+   and [Ansible inventory model](https://docs.ansible.com/ansible/latest/inventory_guide/index.html).
 2. Stop on duplicate/stale identities, unexpected live members, unreachable
    monitoring hosts, or topology drift; monitoring refresh must not conceal a
    cluster/state conflict.
@@ -898,9 +993,14 @@ safely resume after revalidation.
 4. Preview the generated targets and Ansible monitoring-only changes. Require
    confirmation for monitoring service restarts or destructive retention/data
    changes, but do not create a Terraform apply merely to rewrite targets.
+   Treat [Ansible check/diff mode](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html)
+   as an estimate, not proof of convergence.
 5. Atomically write the external generated inventory/target inputs and run only
    the monitoring role/playbook against monitoring hosts; do not mutate
-   ScyllaDB membership, packages, or unrelated cluster infrastructure.
+   ScyllaDB membership, packages, or unrelated cluster infrastructure. Follow
+   the target release's [ScyllaDB Monitoring documentation](https://monitoring.docs.scylladb.com/stable/)
+   and [Manager documentation](https://manager.docs.scylladb.com/stable/) for
+   their respective targets/agents.
 6. Validate configuration syntax, service health, target discovery/scrape
    status, expected node/Manager coverage, and absence of stale targets. Restore
    the prior generated monitoring configuration only when that rollback is
@@ -914,7 +1014,10 @@ safely resume after revalidation.
 1. Require an approved source/target OS and repository policy, explicit role/
    host scope, maintenance window, and evidence that the OS change is compatible
    with installed ScyllaDB, Manager, monitoring, Ansible, and OCI tooling. Do not
-   combine a ScyllaDB major-version upgrade with this operation.
+   combine a ScyllaDB major-version upgrade with this operation. The
+   [ScyllaDB upgrade index](https://docs.scylladb.com/manual/stable/upgrade/)
+   governs ScyllaDB product/package paths but does not by itself authorize an
+   arbitrary guest-OS major upgrade.
 2. Acquire the lock and reconcile metadata, Terraform state, fresh
    Terraform-output inventory, provider image metadata, live membership, and any
    prior upgrade journal. Stop on drift or uncertain host generation.
@@ -926,14 +1029,20 @@ safely resume after revalidation.
    Call out that in-place package upgrade versus provider-image reprovision has
    different Terraform and data implications; until later design approves image
    reprovision, it is not an implicit part of `upgrade-os`, and Scylla host
-   reprovision must use replacement semantics.
+   reprovision must use replacement semantics. Consult the
+   [OCI Compute image lifecycle documentation](https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm)
+   and [ScyllaDB dead-node replacement procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html)
+   before selecting replacement over an explicitly supported in-place path.
 5. Display package removals, reboot needs, role order, capacity impact, and any
    Terraform image change; require confirmation before the first mutation and
    separate replacement confirmation if a future provider-image path is used.
 6. Process exactly one host at a time. For a Scylla node, drain/coordinate only
    as required by version-specific guidance, apply the OS role, reboot if
    needed, restore service, and wait for membership, schema, token, and
-   application health before continuing.
+   application health before continuing. Use the
+   [ScyllaDB administrator procedures](https://docs.scylladb.com/manual/stable/operating-scylla/)
+   and pinned [Ansible roles source](https://github.com/scylladb/scylla-ansible-roles)
+   for the target release rather than promising a universal package sequence.
 7. Upgrade jump hosts only while another validated route or an approved
    maintenance outage exists; upgrade Manager/monitoring hosts under their
    role-specific task, data, and observability safeguards.
@@ -954,17 +1063,24 @@ safely resume after revalidation.
 2. Reconcile cluster metadata with current Terraform state and fresh JSON
    outputs, derive and validate inventory in memory or a temporary protected
    file without replacing canonical inventory, and stop on jump-host identity,
-   address, zone, or host-key conflicts.
+   address, zone, or host-key conflicts. Use the machine-readable
+   [Terraform output contract](https://developer.hashicorp.com/terraform/cli/commands/output)
+   and [Ansible inventory guide](https://docs.ansible.com/ansible/latest/inventory_guide/index.html).
 3. Validate each configured direct or ProxyJump route: operator-to-bastion,
    bastion-to-assigned-private-host, deterministic multi-bastion selection, and
-   zero-jump-host direct routing where applicable.
+   zero-jump-host direct routing where applicable. Compare the design with
+   [OCI Bastion concepts and session types](https://docs.oracle.com/en-us/iaas/Content/Bastion/Concepts/bastionoverview.htm)
+   and OpenSSH's [`ProxyJump` configuration](https://man.openbsd.org/ssh_config).
 4. Correlate OCI provider IDs/addresses with the per-cluster known-hosts data,
    then test DNS/address resolution, SSH authentication, forwarding policy, and
    bounded noninteractive connectivity without disabling host-key checking.
 5. Probe representative or all assigned ScyllaDB, Manager, and monitoring
    targets according to the requested depth; distinguish network/security-list,
    bastion SSH, target SSH, authentication, and host-key failures without
-   exposing credentials.
+   exposing credentials. Diagnose paths against
+   [OCI VCN networking](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/overview.htm),
+   [OCI network security groups](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/networksecuritygroups.htm),
+   and the [Ansible SSH connection reference](https://docs.ansible.com/ansible/latest/collections/ansible/builtin/ssh_connection.html).
 6. Make no Terraform, Ansible, firewall, package, service, inventory, or
    known-hosts mutation. A future repair mode must be a separate mutating
    operation with a plan and confirmation, not an automatic consequence of this
@@ -1217,6 +1333,11 @@ Validate behavior against current versions of these primary sources:
 - [Workspaces](https://developer.hashicorp.com/terraform/language/state/workspaces)
 - [Terraform JSON output format](https://developer.hashicorp.com/terraform/internals/json-format)
 - [Terraform CLI documentation](https://developer.hashicorp.com/terraform/cli)
+- [Terraform `init`](https://developer.hashicorp.com/terraform/cli/commands/init),
+  [`plan`](https://developer.hashicorp.com/terraform/cli/commands/plan),
+  [`apply`](https://developer.hashicorp.com/terraform/cli/commands/apply),
+  [`destroy`](https://developer.hashicorp.com/terraform/cli/commands/destroy),
+  and [`output`](https://developer.hashicorp.com/terraform/cli/commands/output)
 
 ### Ansible
 
@@ -1225,6 +1346,8 @@ Validate behavior against current versions of these primary sources:
 - [Inventory plugins](https://docs.ansible.com/ansible/latest/plugins/inventory.html)
 - [Developing inventory plugins](https://docs.ansible.com/ansible/latest/dev_guide/developing_inventory.html)
 - [Ansible security guidance](https://docs.ansible.com/ansible/latest/reference_appendices/security.html)
+- [Ansible check/diff mode](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html)
+- [Ansible SSH connection plugin](https://docs.ansible.com/ansible/latest/collections/ansible/builtin/ssh_connection.html)
 
 ### OCI
 
@@ -1232,6 +1355,8 @@ Validate behavior against current versions of these primary sources:
 - [OCI networking](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/overview.htm)
 - [OCI network security groups](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/networksecuritygroups.htm)
 - [OCI Compute instance metadata](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/gettingmetadata.htm)
+- [OCI Compute images](https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm)
+- [OCI Bastion concepts](https://docs.oracle.com/en-us/iaas/Content/Bastion/Concepts/bastionoverview.htm)
 - [OCI SDK and CLI configuration](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/sdkconfig.htm)
 - [OCI security best practices](https://docs.oracle.com/en-us/iaas/Content/Security/Reference/configuration_security.htm)
 
@@ -1242,6 +1367,9 @@ Validate behavior against current versions of these primary sources:
 - [ScyllaDB Manager documentation](https://manager.docs.scylladb.com/stable/)
 - [ScyllaDB Monitoring documentation](https://monitoring.docs.scylladb.com/stable/)
 - [ScyllaDB upgrade documentation](https://docs.scylladb.com/manual/stable/upgrade/)
+- [Add-node/out-scale procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
+- [Remove-node/down-scale procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html)
+- [Dead-node replacement procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html)
 
 Use the version-specific node add/remove/replace, rolling restart/upgrade,
 repair, backup, and recovery procedures linked from those official roots. Do not
