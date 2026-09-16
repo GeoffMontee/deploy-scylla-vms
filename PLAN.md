@@ -16,6 +16,7 @@
   - [Core models and schemas](#core-models-and-schemas)
   - [Stable node identity](#stable-node-identity)
 - [5. Terraform responsibilities](#5-terraform-responsibilities)
+  - [Storage policy, manifest, and device preparation](#storage-policy-manifest-and-device-preparation)
   - [Per-cluster state and concurrency](#per-cluster-state-and-concurrency)
 - [6. Terraform output to Ansible inventory](#6-terraform-output-to-ansible-inventory)
   - [Refresh and conflict handling](#refresh-and-conflict-handling)
@@ -160,6 +161,20 @@ must use the same registry, safety classes, journaling, and phase interfaces.
 - `--monitoring-instance-type TYPE`: separate from Manager to avoid the ambiguous
   assumption that one type applies to both.
 - `--jump-host-instance-type TYPE`
+- `--scylla-storage-backend {auto,local-nvme,block-volume}`: requested data
+  backend for newly created Scylla nodes; default `auto`.
+- `--scylla-storage-min-device-count COUNT` and
+  `--scylla-storage-min-total-gib GIB`: minimum usable non-root device inventory
+  required before `auto` or explicit `local-nvme` may select local storage.
+- `--scylla-block-volume-count COUNT`,
+  `--scylla-block-volume-size-gib GIB`,
+  `--scylla-block-volume-vpus-per-gb VPU`, and
+  `--scylla-block-volume-attachment-type {iscsi,paravirtualized}`: explicit
+  block-volume layout inputs. Provider/version validation may narrow accepted
+  combinations.
+- `--scylla-block-volume-retention {delete,retain}`: disposition after safe node
+  removal/full destroy; default must be chosen and documented before
+  implementation rather than inferred during destruction.
 - `--state-dir PATH`: absolute or user-expanded application state root. This
   overrides `DEPLOY_SCYLLA_VMS_STATE_DIR`; otherwise the platform-aware default
   described under "Per-cluster state and concurrency" is used.
@@ -251,6 +266,24 @@ Examples of non-secret environment defaults:
 - `DEPLOY_SCYLLA_VMS_MANAGER_INSTANCE_TYPE`
 - `DEPLOY_SCYLLA_VMS_MONITORING_INSTANCE_TYPE`
 - `DEPLOY_SCYLLA_VMS_JUMP_HOST_INSTANCE_TYPE`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_BACKEND`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_DEVICE_COUNT`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_TOTAL_GIB`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_COUNT`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_SIZE_GIB`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_VPUS_PER_GB`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_ATTACHMENT_TYPE`
+- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_RETENTION`
+
+The structured non-secret config model contains one `StoragePolicy` per host
+role. CLI/env options initially expose the commonly changed Scylla fields above;
+all other policy fields use the same CLI > environment > config file > built-in
+default precedence when/if exposed. Scylla defaults to `auto`. Manager and
+monitoring default to explicit `block-volume` for their application data, with
+separate capacity/performance/retention fields; they never consume local NVMe
+implicitly. Jump hosts default to `boot-only`. `local-nvme` is initially invalid
+for non-Scylla roles. A config field that has no approved CLI/env spelling must
+not be silently overridden through an ad hoc variable.
 
 Secret values are accepted **only from environment variables**. Secret CLI
 flags, secret config-file keys, and persistent credential files created by the
@@ -284,6 +317,7 @@ scylla_vms/
   providers/
     base.py                   # CloudProvider interface
     oci.py                    # OCI validation and Terraform inputs
+  storage.py                  # policy resolution and device/manifest validation
   terraform/
     runner.py                 # init/validate/plan/apply/output/destroy boundary
     state.py                  # paths, locking, snapshots, reconciliation
@@ -316,16 +350,31 @@ library) for:
 
 - `ClusterSpec`: schema version, cluster ID/name, provider, region, zones,
   `scylla_datacenter`, desired role counts, network policy, software
-  channels/versions.
+  channels/versions, and role-specific storage policies.
 - `ZoneSpec`: normalized zone ID, `scylla_rack`, and desired Scylla node count.
 - `HostSpec`: stable logical ID, role, zone, ordinal, provider resource ID,
   private/public addresses, SSH route, lifecycle state, and nullable
-  `scylla_datacenter`/`scylla_rack` fields that are required for Scylla hosts.
+  `scylla_datacenter`/`scylla_rack` fields that are required for Scylla hosts,
+  plus the persisted storage backend/generation.
 - `InstanceTypes`: separate Scylla, Manager, monitoring, and jump-host values.
+- `StoragePolicy`: role, requested backend (`auto`, `local-nvme`,
+  `block-volume`, or role-restricted `boot-only`), local-device minimums,
+  block-volume count/size/performance/attachment/encryption/retention, and
+  intended RAID/filesystem/mount-role policy.
+- `StorageManifest`: versioned expected provider/guest-device identity,
+  selected backend, aggregate capacity, attachment and durability properties,
+  and intended initialization/ownership policy for one host.
+- `StorageDeviceFact`: read-only OS discovery result containing stable
+  by-id/serial/WWN/provider correlation, size, root-disk relationship,
+  signatures, partitions, filesystems, mounts, holders, and ownership marker.
+- `PreparedStorageRecord`: digest of the approved manifest and discovered
+  devices, filesystem/RAID UUIDs, mount roles, logical host/cluster ownership,
+  and preparation generation.
 - `TerraformOutputs`: versioned output schema containing only expected fields.
 - `InventoryModel`: groups, hosts, connection routes, and non-secret variables.
 - `OperationRecord`: operation ID, requested target, preconditions, completed
-  phases, plan digest, timestamps, and non-secret outcomes.
+  phases, plan/manifest/prepared-storage digests, wipe/fallback checkpoints,
+  timestamps, and non-secret outcomes.
 
 Persist a generated random cluster UUID at initial creation. Validate
 `--cluster-name` rather than silently sanitizing it: the initial grammar is
@@ -345,6 +394,12 @@ addresses are attributes, not identity. Removing a node tombstones its logical
 ID. Replacement records link old and new provider instances while preserving
 the replacement intent required by ScyllaDB. Terraform resources should use
 stable `for_each` keys, not list positions, to prevent renumbering cascades.
+The selected storage backend and preparation generation are attributes of that
+stable identity, not identity themselves. A replacement keeps the logical ID but
+does not make old media trustworthy: new local NVMe is rebuilt from surviving
+replicas, and a retained block volume may be attached only after its cluster,
+logical-host, generation, filesystem, and expected-data disposition are
+validated. Stale data is never made safe merely by reusing the logical ID.
 
 ## 5. Terraform responsibilities
 
@@ -375,6 +430,155 @@ Review the [OCI Terraform provider documentation](https://registry.terraform.io/
 before defining resources and data sources; pin compatible provider versions and
 commit `.terraform.lock.hcl`.
 
+### Storage policy, manifest, and device preparation
+
+Storage ownership is deliberately split:
+
+- Python resolves policy, validates provider capabilities and manifests,
+  controls locks/plans/confirmations/checkpoints, compares guest discovery with
+  expected devices, and refuses ambiguity or backend drift.
+- Terraform creates block volumes and attachments and emits their non-secret
+  provider metadata. It does not format, assemble RAID, mount, or modify guest
+  filesystems.
+- Ansible discovers guest devices and performs approved guest-side connection,
+  destructive preflight, wipe, RAID/filesystem/mount preparation, ownership
+  marking, and Scylla storage tuning. It does not create/delete OCI volumes or
+  choose the backend.
+
+#### Backend resolution
+
+`StoragePolicy.requested_backend` has these semantics:
+
+- `local-nvme` requires the selected OCI shape to advertise local NVMe and, after
+  provisioning, requires an exact unambiguous guest inventory satisfying the
+  configured minimum device count and usable aggregate capacity. Any mismatch
+  fails without formatting or falling back.
+- `block-volume` creates only the declared OCI Block Volumes and excludes every
+  local NVMe device from preparation, even if present.
+- `auto` consults current OCI shape capabilities before the first Terraform
+  plan. It provisionally prefers local NVMe for Scylla only when policy permits
+  ephemeral storage and the advertised count/capacity meet the minimums;
+  otherwise it selects Block Volume. Shape availability is not storage proof:
+  after the instance exists, read-only guest discovery must confirm the actual
+  devices. If provisional local NVMe is absent, undersized, or ambiguous,
+  Python may checkpoint a fallback and create/attach Block Volumes through a
+  second reviewed Terraform plan **only before** any ownership marker,
+  filesystem, Scylla data initialization, or cluster join. It then refreshes the
+  Terraform manifest and reruns discovery.
+
+OCI local NVMe exists only on shapes that provide it, such as documented Dense
+I/O offerings; resolve the exact chosen shape from provider data rather than a
+hard-coded family list. Consult [OCI Compute shapes](https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm)
+and [OCI local NVMe guidance](https://docs.oracle.com/en-us/iaas/Content/Compute/References/nvmedeviceinformation.htm).
+Never infer availability from guessed `/dev/nvme*` names.
+
+Once preparation starts, persist the final selected backend, policy digest,
+manifest digest, device identities, and preparation generation atomically.
+`auto` is no longer reevaluated for that host. A requested/observed backend
+change is sensitive runtime drift and requires a separately designed
+replacement or data-migration workflow; ordinary deploy/redeploy/upgrade cannot
+switch or reinitialize it.
+
+#### Durability and block-volume policy
+
+OCI warns that terminating an instance with local NVMe securely erases those
+drives and makes their data unrecoverable; OCI does not back up or protect those
+devices. See [Protecting data on NVMe devices](https://docs.oracle.com/en-us/iaas/Content/Compute/References/nvmedeviceinformation.htm)
+and [Terminating an instance](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/terminatinginstance.htm).
+Therefore local NVMe is ephemeral and a local disk/node is never a backup.
+Selection requires an approved replication/failure-domain, free-capacity,
+repair/rebuild, replacement-time, and independently verified backup policy.
+Node loss/replacement rebuilds from surviving Scylla replicas using the
+version-specific replacement procedure; RAID does not replace replication or
+backup. If policy requires storage encryption and no reviewed guest-encryption
+design compatible with the target Scylla/OS/performance profile exists, reject
+local NVMe.
+
+A block-volume policy explicitly declares per role:
+
+- volume count and size, required aggregate/usable capacity, and striping or
+  single-volume layout;
+- exact VPU-per-GB/performance setting, validated against current service,
+  volume-size, attachment, shape, and provider limits rather than hard-coded
+  throughput claims;
+- `iscsi` or `paravirtualized` attachment, consistent device-path request where
+  supported, multipath requirement where applicable, and guest connection
+  method;
+- OCI-managed or customer-managed at-rest key **identifier**, in-transit
+  encryption setting, and whether CHAP is requested. CHAP values are never
+  placed in the manifest or process arguments; initial support must refuse CHAP
+  unless a reviewed transient secret handoff can satisfy the environment-only
+  secret policy without exposing credentials in Terraform output/logs; and
+- per-volume delete/retain disposition, backup/snapshot policy, and whether
+  retained media may ever be reused.
+
+Validate these choices against the official [Block Volume overview](https://docs.oracle.com/en-us/iaas/Content/Block/Concepts/overview.htm),
+[performance/VPU guidance](https://docs.oracle.com/en-us/iaas/Content/Block/Concepts/blockvolumeperformance.htm),
+and [attachment guidance](https://docs.oracle.com/en-us/iaas/Content/Block/Tasks/attach-compute-volume-attachment.htm).
+Do not assume one attachment or performance tier is universally best.
+
+#### Versioned storage manifest
+
+Each host entry in Terraform output contains a `storage` object with its own
+schema version. It is always present: `boot-only` roles use an empty data-device
+list. The object contains no secret and includes:
+
+- requested and selected backend, selection algorithm/version and
+  provisional/final status, policy digest, and storage generation;
+- expected devices in deterministic order, with local/block kind, provider
+  volume and attachment OCIDs when applicable, provider-declared local
+  slot/device identifiers when available, requested consistent device path,
+  expected serial/WWN/by-id identity when the provider exposes one, and expected
+  minimum/exact size;
+- expected device count, raw and policy-usable aggregate capacity, and whether
+  each device is ephemeral;
+- attachment type, IQN/portal or multipath metadata only when non-secret,
+  in-transit/at-rest encryption mode and customer key identifier, VPU/performance
+  setting, and retention/delete behavior; and
+- intended RAID level/device, filesystem type/label, stable mount UUID/by-id
+  strategy, mount point/options, and data/commitlog/cache/log role allocation.
+
+For local NVMe, fields that OCI does not expose must be explicitly null rather
+than fabricated; the manifest still declares expected count/capacity/interface
+and the permitted provider-identity predicate. The subsequent
+`PreparedStorageRecord` binds actual OS identifiers to this manifest. For Block
+Volume, volume/attachment OCIDs and requested device-path metadata are required.
+Manifest schema upgrades fail closed on unknown fields or semantics.
+
+#### Guest discovery and destructive preparation
+
+Before any storage mutation, Ansible returns machine-readable `lsblk`/udev,
+filesystem-signature, mount, holder, RAID/LVM, and cloud attachment facts.
+Python correlates provider volume/attachment metadata, serial/WWN/by-id links,
+consistent paths, and instance metadata to an exact OS device set. It traces the
+root/boot filesystem through partitions, device mapper, RAID, and holders and
+excludes every ancestor/member; it also excludes any device not in the manifest.
+Linux enumeration order and wildcard matches are never selectors.
+
+Preflight requires the exact expected count/capacity and one-to-one identity
+mapping and inspects partition tables, filesystem/RAID/LVM signatures, mounts,
+open holders, swap, and a durable cluster/logical-host/storage-generation
+ownership marker. Missing/duplicate serials, multiple possible mappings,
+unexpected signatures/data, wrong ownership, or a boot relationship aborts
+without change. Reuse requires a separate wipe phase and confirmation naming the
+cluster, stable host, provider/device IDs, detected signatures, and retention
+impact. Python issues a short-lived operation/checkpoint-bound
+`storage_wipe_approved` token; `--yes` cannot bypass mismatch/root protection.
+No playbook formats by wildcard or because a disk appears blank by name.
+
+Preparation follows the pinned ScyllaDB/OS version's supported setup, RAID,
+filesystem, and I/O tuning flow. Current official guidance describes
+`scylla_setup`/`scylla_raid_setup`, XFS, and RAID0 for multiple suitable data
+devices, but implementation must validate exact commands and generated
+configuration for the selected release; see [ScyllaDB system configuration](https://docs.scylladb.com/manual/stable/getting-started/system-configuration.html)
+and [hardware/system requirements](https://docs.scylladb.com/manual/stable/getting-started/system-requirements.html).
+RAID0 across local NVMe or Block Volumes is used only when that guidance,
+replication policy, and the explicit layout approve it. Create mounts from
+filesystem UUID/stable by-id paths with idempotent ownership/options and verify
+them after reboot. Data, commitlog, cache, and service-log placement remain
+explicit policy choices; never assume one universal split across ScyllaDB,
+Manager, monitoring, images, and OS versions.
+
 ### Per-cluster state and concurrency
 
 `.gitignore` does not configure state placement. Terraform's `.terraform/`
@@ -397,6 +601,7 @@ components. The one canonical cluster root is:
 ```text
 <state-dir>/clusters/<validated-cluster-name>/
   cluster.json
+  storage/                      # protected prepared-device/ownership records
   terraform/
     work/                       # staged reviewed .tf and lock-file inputs
     .terraform/                # TF_DATA_DIR provider/module/backend working data
@@ -451,7 +656,8 @@ appropriate, and atomic replace; do not pretend that rewriting Terraform state
 outside Terraform is safe.
 
 Acquire an application-level per-cluster file lock before reading or changing
-cluster metadata, Terraform state, generated inventory, or operation journals.
+cluster metadata, storage records, Terraform state, generated inventory, or
+operation journals.
 Include PID/host/operation metadata, bounded waiting, stale-lock diagnostics, and
 safe release. Also rely on backend locking where available. Never use
 `-lock=false` in normal operation. Detect concurrent plans whose precondition
@@ -488,7 +694,8 @@ as external binaries with pinned/tested minimum versions.
 
 Terraform outputs will expose a versioned, minimal host manifest: cluster UUID,
 logical host IDs, roles, zones, provider IDs, private/public addresses,
-jump-host routing references, `scylla_datacenter`, and `scylla_rack`. Both
+jump-host routing references, `scylla_datacenter`, `scylla_rack`, and the
+versioned `storage` object defined above. Both
 topology fields are required non-empty strings for every Scylla node and are
 always present as `null` for Manager, monitoring, and jump hosts so consumers
 have one unambiguous schema. They are non-secret logical values, not provider
@@ -502,15 +709,16 @@ Inventory generation is a deterministic transformation:
 2. validate its schema and cluster UUID;
 3. normalize/sort hosts by stable logical ID;
 4. reject duplicate host IDs, IP conflicts, unknown roles/zones, missing routes,
-   provider IDs associated with another logical host, missing topology fields on
+   provider IDs associated with another logical host, missing/invalid storage
+   manifests, backend/policy/storage-generation drift, missing topology fields on
    a Scylla node, non-null topology fields on a non-Scylla host, or a
    datacenter/rack value that differs from the persisted zone mapping;
 5. build groups such as `scylla`, `manager`, `monitoring`, `jump_hosts`, and
    zone groups, plus Scylla datacenter/rack groups using inventory-safe derived
    group names;
 6. generate `ansible_host`, `ansible_user`, ProxyJump-style connection metadata,
-   and exact `scylla_datacenter`/`scylla_rack` hostvars without changing the
-   logical label values or adding secrets;
+   exact `scylla_datacenter`/`scylla_rack` and validated expected-storage
+   hostvars without changing logical values or adding secrets;
 7. atomically write an owner-readable generated inventory;
 8. run `ansible-inventory --list`/`--graph` validation; and
 9. probe identity/reachability when required.
@@ -539,7 +747,10 @@ topology conflict, not an inventory refresh: block sensitive/destructive
 operations and do not rewrite cluster metadata, Terraform inputs, inventory, or
 live topology labels to make the sources agree. Other stale inventory, duplicate
 identity, missing state, unexpected live members/resources, topology drift, or
-an unresolved host-key change also blocks the operation. The tool must never
+an unresolved host-key change also blocks the operation. A selected-backend,
+device-identity, ownership-marker, policy-digest, or storage-generation mismatch
+on an initialized host is likewise sensitive drift; inventory refresh must not
+rewrite it or trigger formatting. The tool must never
 silently choose Terraform, inventory, or live cluster membership as
 authoritative when they disagree.
 
@@ -555,7 +766,9 @@ and official ScyllaDB documentation before encoding behavior.
 Planned roles/playbooks cover:
 
 - base OS prerequisites, repositories, package pinning, users, time sync,
-  kernel/sysctl/limits, disks/filesystems, and ScyllaDB hardware tuning;
+  kernel/sysctl/limits, boot/system filesystems, and ScyllaDB hardware tuning;
+- manifest-bound application-device discovery, preparation, retirement, and
+  mount validation;
 - ScyllaDB installation and configuration;
 - seeds, listen/RPC/broadcast addresses, authentication/encryption policy, and
   the selected snitch/topology properties needed to apply exact persisted
@@ -595,7 +808,20 @@ select destructive targets, or advance the Python operation journal.
   resources.
 - `ansible/playbooks/base-os.yml` — idempotent users, repositories, time sync,
   limits, kernel settings, disks/filesystems, and role-specific prerequisites on
-  newly provisioned or explicitly reconverged hosts.
+  newly provisioned or explicitly reconverged hosts; its baseline phase must not
+  discover by wildcard, format, mount, or reinitialize application data devices.
+- `ansible/playbooks/storage-discover.yml` — read-only collection of block/NVMe,
+  provider identity, root ancestry, signatures, partitions, mounts, holders,
+  RAID/LVM, and ownership markers for Python manifest reconciliation.
+- `ansible/playbooks/storage-prepare.yml` — after exact manifest validation,
+  prepare only the explicitly limited host's approved devices: connect
+  attachments where needed, perform separately authorized wipe, assemble the
+  declared RAID/filesystem/mounts, write ownership markers, and verify reboot
+  persistence. It refuses established backend drift.
+- `ansible/playbooks/storage-retire.yml` — after Scylla/service shutdown or
+  logical node removal, verify ownership, unmount/deactivate guest storage where
+  required, and return retention/deletion evidence; it does not wipe retained
+  media or delete/detach OCI resources.
 - `ansible/playbooks/scylla-node.yml` — install and configure ScyllaDB on
   `scylla` hosts, including persisted datacenter/rack/snitch topology, but do not
   initiate add/remove/replace topology actions.
@@ -652,15 +878,16 @@ select destructive targets, or advance the Python operation journal.
   host's OS, reboot, service, route, and role-specific cluster health before the
   next host proceeds.
 
-The read-only preflight, connectivity, health, evidence, and OS-preflight/
-postcheck playbooks must support Ansible check mode without reporting false
-changes. Configuration playbooks should support
+The read-only preflight, connectivity, health, evidence, storage-discovery, and
+OS-preflight/postcheck playbooks must support Ansible check mode without
+reporting false changes. Configuration playbooks should support
 [check/diff mode](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html)
 where their modules permit it, but check mode is only a preview. The bootstrap,
-remove-live, remove-dead, replace-dead, cleanup, repair, cluster-shutdown, in-place
-upgrade, and reprovision-preparation playbooks either mutate topology/host state
-or coordinate irreversible boundaries; they must detect and reject check mode
-rather than simulate safety. Python provides a separate operation plan.
+remove-live, remove-dead, replace-dead, cleanup, repair, storage-preparation/
+retirement, cluster-shutdown, in-place upgrade, and reprovision-preparation
+playbooks either mutate topology/host state or coordinate irreversible
+boundaries; they must detect and reject check mode rather than simulate safety.
+Python provides a separate operation plan.
 
 Use [playbook tags](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_tags.html)
 only for documented sub-responsibilities, never to skip required safety gates.
@@ -737,7 +964,10 @@ safely resume after revalidation.
   `ansible/playbooks/connectivity-check.yml` for all hosts through final routes.
   With zero jump hosts, require the direct-route connectivity result instead.
 - **4.** `ansible/playbooks/base-os.yml` on non-jump managed hosts, then
-  `ansible/playbooks/scylla-node.yml` on `scylla`.
+  `ansible/playbooks/storage-discover.yml`. After Python finalizes each manifest
+  (including any pre-initialization `auto` fallback), run
+  `ansible/playbooks/storage-prepare.yml` on Scylla, Manager, and monitoring
+  hosts, then `ansible/playbooks/scylla-node.yml` on `scylla`.
 - **5.** `ansible/playbooks/scylla-health.yml`; do not configure service roles
   until the initial ring/topology gate passes.
 - **6.** `ansible/playbooks/manager-server.yml`, then
@@ -754,8 +984,11 @@ safely resume after revalidation.
    Terraform state unless an interrupted deploy journal is safe to resume.
 2. Validate environment-supplied credentials, OCI region/zones, node counts,
    explicit/defaulted Scylla datacenter and zone-to-rack mapping, shapes, quotas
-   where queryable, storage, SSH route, and least-privilege network intent before
-   creating resources. Validate resource fields against the
+   where queryable, role storage policies, local-NVMe count/capacity thresholds,
+   Block Volume inputs, SSH route, and least-privilege network intent before
+   creating resources. Resolve only a provisional `auto` backend from current
+   [OCI shape capabilities](https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm);
+   not every shape has local NVMe. Validate resource fields against the
    [OCI Terraform provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs)
    and validate placement/network security against OCI's
    [regions and availability domains](https://docs.oracle.com/en-us/iaas/Content/General/Concepts/regions.htm),
@@ -763,8 +996,9 @@ safely resume after revalidation.
    and [network security groups](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/networksecuritygroups.htm).
 3. Atomically create cluster metadata, stable cluster/host identities, desired
    topology including normalization algorithm/version and resolved
-   datacenter/rack labels, and an operation journal; no Terraform apply occurs
-   until those identifiers are durable.
+   datacenter/rack labels, requested/provisional storage policy and selection
+   algorithm, and an operation journal; no Terraform apply occurs until those
+   identifiers are durable.
 4. Stage Terraform inputs in the canonical cluster root, then run
    [Terraform initialization](https://developer.hashicorp.com/terraform/cli/commands/init),
    validate, and a saved
@@ -777,15 +1011,23 @@ safely resume after revalidation.
    that a failed [apply](https://developer.hashicorp.com/terraform/cli/commands/apply)
    can leave partial changes and does not automatically roll them back.
 6. Read fresh Terraform JSON outputs, generate and validate Ansible inventory,
-   reject identity/address/zone/datacenter/rack conflicts, and establish SSH host
-   trust and connectivity through the selected direct or bastion routes. Follow
+   reject identity/address/zone/datacenter/rack/storage-manifest conflicts, and
+   establish SSH host trust and connectivity through the selected direct or
+   bastion routes. Run read-only storage discovery and require exact non-root
+   device correlation. If provisional `auto` local NVMe fails validation, stop
+   before data initialization, checkpoint the fallback, create/attach explicit
+   Block Volumes with a second saved Terraform plan, refresh outputs/inventory,
+   and repeat discovery; explicit `local-nvme` fails instead. Follow
    the machine-readable
    [`terraform output -json` contract](https://developer.hashicorp.com/terraform/cli/commands/output)
    plus [Terraform's JSON format](https://developer.hashicorp.com/terraform/internals/json-format)
    and the [Ansible inventory guide](https://docs.ansible.com/ansible/latest/inventory_guide/index.html).
-7. Run idempotent base and ScyllaDB playbooks in topology-safe order, limit
-   initial bootstrap concurrency, and wait for all expected nodes to join and
-   converge before continuing, using the
+7. Finalize/persist each storage manifest, run the separately gated storage
+   preparation against exact device IDs, and verify stable mounts/ownership
+   before installing/configuring ScyllaDB. Then run idempotent ScyllaDB
+   playbooks in topology-safe order, limit initial bootstrap concurrency, and
+   wait for all expected nodes to join and converge. Use the
+   [ScyllaDB storage setup guidance](https://docs.scylladb.com/manual/stable/getting-started/system-configuration.html),
    [official ScyllaDB Ansible integration](https://docs.scylladb.com/manual/stable/using-scylla/integrations/integration-ansible.html)
    and current [ScyllaDB Ansible roles source](https://github.com/scylladb/scylla-ansible-roles);
    execute through Ansible's documented
@@ -801,8 +1043,9 @@ safely resume after revalidation.
    Use the [ScyllaDB administrator procedures index](https://docs.scylladb.com/manual/stable/operating-scylla/)
    for target-version health/status interfaces.
 10. Atomically record final desired/observed topology, Terraform state/output
-    and plan digests, inventory digest, health evidence, and completed phases.
-    Preserve the journal for safe repair/resume if any postcondition failed.
+    and plan digests, inventory and storage-manifest/prepared-record digests,
+    health evidence, and completed phases. Preserve the journal for safe
+    repair/resume if any postcondition failed.
 
 ### Add-node
 
@@ -816,7 +1059,11 @@ safely resume after revalidation.
 - **3.** After Terraform creates the host and inventory is refreshed,
   `ansible/playbooks/connectivity-check.yml`,
   `ansible/playbooks/base-os.yml`, and
-  `ansible/playbooks/scylla-node.yml`, all limited to the new stable ID.
+  `ansible/playbooks/storage-discover.yml`, all limited to the new stable ID.
+- **3a.** After Python finalizes the manifest or applies/validates an allowed
+  pre-initialization Block Volume fallback, run
+  `ansible/playbooks/storage-prepare.yml`, then
+  `ansible/playbooks/scylla-node.yml`, limited to the same ID.
 - **4.** `ansible/playbooks/scylla-bootstrap.yml` limited to that same ID,
   followed by `ansible/playbooks/scylla-health.yml` on the cluster.
 - **5.** `ansible/playbooks/manager-agent.yml` and
@@ -828,9 +1075,10 @@ safely resume after revalidation.
   `ansible/playbooks/evidence-collect.yml`.
 
 1. Require exactly one new logical node identity and target zone, resolve its
-   persisted cluster datacenter and zone rack, and reject an existing/tombstoned
-   ID, undeclared/unmapped zone, or request that implicitly changes unrelated
-   zone counts or existing topology labels.
+   persisted cluster datacenter and zone rack plus requested storage policy, and
+   reject an existing/tombstoned ID, undeclared/unmapped zone, or request that
+   implicitly changes unrelated zone counts, topology labels, or established
+   storage backends.
 2. Acquire the cluster lock and reconcile cluster metadata, Terraform state,
    fresh Terraform-output inventory, provider identities, and live ScyllaDB
    membership. Stop on drift, stale inventory, or an already-partially-added
@@ -842,8 +1090,10 @@ safely resume after revalidation.
    The [official add-node procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
    requires existing nodes to be up and warns about rack/RF validity.
 4. Produce a saved Terraform plan for only the new host and necessary narrowly
-   scoped dependencies; display provider ID/address expectations and require
-   confirmation before applying infrastructure. Model the full dependency graph
+   scoped dependencies; display provider ID/address and provisional/final
+   storage-manifest expectations, Block Volume costs/disposition, and local-NVMe
+   ephemerality, then require confirmation before applying infrastructure. Model
+   the full dependency graph
    and treat the plan command's
    [resource-targeting option](https://developer.hashicorp.com/terraform/cli/commands/plan)
    as exceptional recovery behavior, not the normal way to isolate a node;
@@ -851,11 +1101,14 @@ safely resume after revalidation.
    [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 5. Apply the plan, refresh Terraform JSON output, regenerate/validate inventory,
    and establish host-key trust and the selected SSH/bastion path for the new
-   host. Refuse any unrelated resource replacement, following Terraform's
+   host. Discover storage read-only; validate exact devices or perform the
+   deploy workflow's pre-initialization `auto` fallback/replan before finalizing
+   the manifest. Refuse any unrelated resource replacement, following Terraform's
    [saved-plan apply semantics](https://developer.hashicorp.com/terraform/cli/commands/apply)
    and Ansible's [SSH connection guidance](https://docs.ansible.com/ansible/latest/collections/ansible/builtin/ssh_connection.html).
-6. Apply base and ScyllaDB roles only to the new node, then bootstrap it using
-   the version-appropriate procedure. Do not add another node concurrently
+6. Apply base and storage preparation only to the new node, verify its storage
+   record and mounts, then configure ScyllaDB and bootstrap it using the
+   version-appropriate procedure. Do not add another node concurrently
    unless a future tested policy explicitly permits it; the
    [add-node guide](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
    requires a matching ScyllaDB patch release and documents bootstrap status.
@@ -870,7 +1123,8 @@ safely resume after revalidation.
 8. Refresh Manager and monitoring configuration, validate the new node's
    exact datacenter/rack, zone, ownership, service, and scrape/management status,
    then persist the desired count, observed membership/topology,
-   inventory/output digests, and operation result.
+   inventory/output and storage manifest/prepared-record digests, and operation
+   result.
 
 ### Scale-out
 
@@ -882,8 +1136,11 @@ safely resume after revalidation.
   `ansible/playbooks/manager-tasks.yml`.
 - **2.** For each Python-selected node/batch after its Terraform apply:
   `ansible/playbooks/connectivity-check.yml`,
-  `ansible/playbooks/base-os.yml`, and `ansible/playbooks/scylla-node.yml`,
-  limited to only that batch.
+  `ansible/playbooks/base-os.yml`, and
+  `ansible/playbooks/storage-discover.yml`, limited to only that batch. After
+  manifest finalization/allowed fallback, run
+  `ansible/playbooks/storage-prepare.yml` and
+  `ansible/playbooks/scylla-node.yml` on that same batch.
 - **3.** `ansible/playbooks/scylla-bootstrap.yml` for the batch, then
   `ansible/playbooks/scylla-health.yml` for the full cluster before Python plans
   another batch, followed by `ansible/playbooks/manager-agent.yml` and
@@ -903,11 +1160,14 @@ safely resume after revalidation.
    stop on drift or an incomplete prior scaling journal.
 3. Validate the resulting odd/asymmetric topology, failure-domain/replication
    goals and keyspace replication across the resolved datacenter/racks, quotas,
-   network/storage capacity, bootstrap load, and cluster health. Choose a
+   network/storage capacity, each new host's storage policy and shape
+   capabilities, local-NVMe recovery policy or Block Volume limits, bootstrap
+   load, and cluster health. Choose a
    deterministic, topology-safe node addition order under the
    [ScyllaDB out-scale prerequisites](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html).
 4. Display a complete preview of the expansion and require confirmation for the
-   full desired-topology delta. Partition execution into bounded batches or
+   full desired-topology and per-node storage delta, including ephemeral and
+   retained/deleted volume outcomes. Partition execution into bounded batches or
    single nodes as required by bootstrap policy; after refreshing state, create
    a separate saved Terraform plan for each batch so no plan is partially
    applied, following Terraform's
@@ -915,8 +1175,9 @@ safely resume after revalidation.
    and the [OCI provider resource contracts](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 5. For each approved node/batch, apply exactly its saved infrastructure plan,
    refresh Terraform output and inventory, validate SSH identity/routes, run
-   base and ScyllaDB playbooks, and wait for streaming plus ring-health gates
-   before planning the next addition. The
+   read-only storage discovery, complete any allowed pre-initialization fallback,
+   then prepare exact devices before ScyllaDB configuration. Wait for streaming
+   plus ring-health gates before planning the next addition. The
    [ScyllaDB add-node procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
    governs version matching, bootstrap, and Up Normal validation.
 6. On failure, stop before the next node, retain the achieved intermediate
@@ -931,8 +1192,8 @@ safely resume after revalidation.
    [official procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
    states cleanup must finish before a later decommission/removal.
 8. Record each completed node boundary, final topology, plan/state/output and
-   inventory digests, and health evidence so the expansion is idempotent on
-   rerun.
+   inventory/storage digests, and health evidence so the expansion is idempotent
+   on rerun.
 
 ### Replace-node
 
@@ -946,8 +1207,11 @@ safely resume after revalidation.
   required by active tasks and the replacement procedure.
 - **3.** After Terraform creates the replacement:
   `ansible/playbooks/connectivity-check.yml`,
-  `ansible/playbooks/base-os.yml`, and `ansible/playbooks/scylla-node.yml`,
-  limited to the new provider generation of the stable logical ID.
+  `ansible/playbooks/base-os.yml`, and
+  `ansible/playbooks/storage-discover.yml`, limited to the new provider
+  generation. After Python rejects stale retained media or finalizes approved
+  reuse/new-storage policy, run `ansible/playbooks/storage-prepare.yml` and
+  `ansible/playbooks/scylla-node.yml` on that same generation.
 - **4.** `ansible/playbooks/scylla-replace-dead.yml` for exactly the confirmed
   dead Host ID, then `ansible/playbooks/scylla-health.yml`, followed by
   `ansible/playbooks/manager-agent.yml` and
@@ -974,7 +1238,10 @@ safely resume after revalidation.
    requires topology quorum, a dead target, and matching ScyllaDB version.
 4. Preserve the tool's stable logical node identity and record a replacement
    generation, exact datacenter/rack labels, and zone while assigning a new
-   provider resource ID. A request to move zone/rack/datacenter is not a
+   provider resource ID. Preserve the established storage backend by default;
+   any backend migration requires a separately approved replacement/migration
+   design and is never an `auto` fallback. A request to move
+   zone/rack/datacenter is not a
    replacement and must be refused as an unsupported topology migration. Do not
    infer replacement identity from an IP address: use the target-version
    procedure's node identifier. Current stable guidance uses the dead node's Host
@@ -982,16 +1249,24 @@ safely resume after revalidation.
    against the [version-specific replacement procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html).
    Never manually duplicate tokens or treat this as an ordinary add.
 5. Create a saved Terraform replacement plan showing destroyed/created compute,
-   storage, addresses, and retained data; report backup implications and require
-   target-ID plus cluster-ID confirmation before apply. Validate compute/image
+   storage, addresses, and retained data; state that old local NVMe is erased/
+   unrecoverable on termination and the replacement rebuilds from the cluster.
+   For retained Block Volumes, require explicit disposition and ownership/
+   generation validation and never auto-attach stale media to another logical
+   node. Report backup implications and require target-ID plus cluster-ID
+   confirmation before apply. Validate compute/image
    fields in the [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs)
    and inspect the saved plan with Terraform's
    [plan/apply workflow](https://developer.hashicorp.com/terraform/cli/commands/apply).
 6. Apply the infrastructure plan, refresh outputs, regenerate/validate
    inventory, and require explicit approval of the new SSH host key after
-   correlating it to the new provider instance.
-7. Configure the replacement host and invoke the supported replacement
-   bootstrap. Wait for streaming, token ownership, schema, and ring-health gates;
+   correlating it to the new provider instance. Discover storage and correlate
+   actual non-root devices with the new manifest; same logical ID is not
+   permission to trust old signatures.
+7. Prepare only validated new/approved retained storage, verify mounts and
+   ownership, then configure the replacement host and invoke the supported
+   replacement bootstrap. Wait for streaming, token ownership, schema, and
+   ring-health gates;
    do not run another topology operation concurrently. Perform post-replacement
    repair when required by the
    [replacement guide](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html);
@@ -1003,7 +1278,8 @@ safely resume after revalidation.
    replacement generation remain intact.
 9. Refresh Manager and monitoring, verify the old provider instance is absent or
    explicitly retained for forensics, validate the stable-ID-to-new-generation
-   mapping and cluster health, and record before/after topology and digests.
+   mapping, selected backend, new prepared-storage record, and cluster health,
+   and record before/after topology and digests.
 
 ### Destroy-node
 
@@ -1021,7 +1297,11 @@ safely resume after revalidation.
   then `ansible/playbooks/scylla-remove-dead.yml` with the confirmed dead Host
   ID. Never run both live and dead removal variants.
 - **4.** `ansible/playbooks/scylla-health.yml` must pass before Python permits
-  Terraform deletion.
+  storage retirement and Terraform deletion. If the target remains reachable,
+  run `ansible/playbooks/storage-retire.yml` with the confirmed ephemeral/
+  delete/retain disposition. For a permanently dead target, skip that playbook
+  and require Python to reconcile the protected prepared-storage record with
+  provider attachment state before deletion.
 - **5.** After Terraform deletion and fresh inventory:
   `ansible/playbooks/monitoring-targets.yml`,
   `ansible/playbooks/manager-tasks.yml` with validate/resume action,
@@ -1043,8 +1323,9 @@ safely resume after revalidation.
    documents disk-capacity/RF-rack checks and distinguishes a live decommission
    from unavailable-node removal.
 4. Present the exact node/provider IDs, data/storage disposition, resulting
-   topology, and ordered Scylla-then-Terraform plan; require destructive
-   confirmation before changing ring membership.
+   topology, local-NVMe irreversible loss, and per-Block-Volume retain/delete
+   outcome in the ordered Scylla-then-storage-retirement-then-Terraform plan;
+   require destructive confirmation before changing ring membership.
 5. Disable or coordinate relevant Manager/monitoring activity, then decommission
    a live Up Normal node, or use the supported unavailable-node removal only
    after recovery is exhausted. Wait until membership and token ownership prove
@@ -1058,14 +1339,18 @@ safely resume after revalidation.
    automatically if later Terraform work fails.
 7. Refresh Terraform state, create and confirm a saved plan that removes only
    the target VM/volumes/attachments and approved dependencies, apply it, then
-   regenerate inventory from fresh outputs. Logical removal must already be
-   proven; use the [Terraform plan reference](https://developer.hashicorp.com/terraform/cli/commands/plan)
+   regenerate inventory from fresh outputs. Before apply, run storage retirement
+   to verify the ownership/disposition record; retained Block Volumes stay
+   tagged/bound to the tombstoned logical identity and are not wiped or
+   reassigned. Logical removal must already be proven; use the
+   [Terraform plan reference](https://developer.hashicorp.com/terraform/cli/commands/plan)
    to review graph effects and do not use targeted destroy as a substitute for
    ScyllaDB decommission/removal. Confirm OCI instance, VNIC, and volume effects
    against the [OCI provider reference](https://registry.terraform.io/providers/oracle/oci/latest/docs).
 8. Tombstone the logical ID, refresh Manager/monitoring, validate surviving
    ring/services/topology and absence of the provider resource, and record
-   membership evidence plus state/output/inventory digests.
+   membership evidence, storage disposition/retained-volume ownership, and
+   state/output/inventory digests.
 
 ### Scale-in
 
@@ -1080,8 +1365,11 @@ safely resume after revalidation.
   `ansible/playbooks/scylla-remove-live.yml`, or, only for a confirmed
   permanently dead node, conditional `ansible/playbooks/scylla-repair.yml`
   followed by `ansible/playbooks/scylla-remove-dead.yml`.
-- **3.** Run `ansible/playbooks/scylla-health.yml` after each logical removal and
-  before its Terraform deletion or selection of the next candidate.
+- **3.** Run `ansible/playbooks/scylla-health.yml` after each logical removal
+  and, when the target is reachable, then
+  `ansible/playbooks/storage-retire.yml` for the confirmed storage disposition
+  before its Terraform deletion or selection of the next candidate. For a dead
+  target, use the `destroy-node` protected-record/provider reconciliation path.
 - **4.** After each refreshed inventory, and finally after the contraction:
   `ansible/playbooks/monitoring-targets.yml`,
   `ansible/playbooks/manager-tasks.yml` with validate/resume action,
@@ -1101,8 +1389,9 @@ safely resume after revalidation.
    [ScyllaDB down-scale capacity and rack checks](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html)
    to each candidate.
 4. Display every selected stable/provider ID, zone order, data/storage outcome,
-   and final topology; allow explicit candidate override only after revalidation,
-   then require confirmation for the complete contraction.
+   local-NVMe loss, Block Volume retain/delete outcome, and final topology; allow
+   explicit candidate override only after revalidation, then require
+   confirmation for the complete contraction.
 5. Process one node at a time by invoking the `destroy-node` safety sequence:
    decommission/remove in Scylla first, durably record that ring boundary, then
    apply the narrowly scoped Terraform deletion and refresh inventory. Follow
@@ -1116,7 +1405,8 @@ safely resume after revalidation.
    membership, token ownership, zone/rack distribution, services, and desired
    counts.
 8. Persist tombstones, per-node completion evidence, final desired/observed
-   topology, Terraform and inventory digests, and any partial-result status.
+   topology, storage dispositions, Terraform and inventory digests, and any
+   partial-result status.
 
 ### Destroy
 
@@ -1138,8 +1428,10 @@ safely resume after revalidation.
   `ansible/playbooks/scylla-remove-dead.yml` one confirmed node at a time, with
   `ansible/playbooks/scylla-health.yml` between nodes.
 - **4.** Run `ansible/playbooks/evidence-collect.yml` for final reachable-host
-  evidence before Terraform apply. No Ansible playbook may run after Terraform
-  destroys the hosts; Python/provider/state verification completes teardown.
+  evidence, then `ansible/playbooks/storage-retire.yml` with the reviewed
+  per-volume disposition before Terraform apply. No Ansible playbook may run
+  after Terraform destroys the hosts; Python/provider/state verification
+  completes teardown.
 
 1. Require the full-cluster operation explicitly; reject node selectors and
    direct callers to `destroy-node`/`scale-in` for individual membership changes.
@@ -1149,14 +1441,17 @@ safely resume after revalidation.
    operations unless a separately designed recovery workflow resolves them.
 3. Capture a protected pre-destroy diagnostic snapshot of topology, Terraform
    outputs, inventory, health, Manager tasks, monitoring targets, and resource
-   IDs. Report independently verified backup status and all retained/external
-   resources; never imply that Terraform destruction is a database backup.
+   IDs, storage manifests, ownership records, and per-volume dispositions.
+   Report independently verified backup status and all retained/external
+   resources; local NVMe will be unrecoverable after termination and neither it
+   nor a Terraform snapshot is implicitly a database backup.
    Consult the [ScyllaDB administrator procedures index](https://docs.scylladb.com/manual/stable/operating-scylla/)
    for version-specific shutdown/backup requirements.
 4. Plan the application-level shutdown order and create a saved Terraform
    destroy plan. Display the validated cluster name and UUID, complete resource
-   inventory, storage/data loss, network/shared-resource effects, and diagnostic
-   retention policy. Create it with the documented
+   inventory, every ephemeral data loss and Block Volume retain/delete action,
+   network/shared-resource effects, and diagnostic retention policy. Create it
+   with the documented
    [`terraform plan -destroy` mode](https://developer.hashicorp.com/terraform/cli/commands/plan)
    and an explicit output path; do not rely on an unsaved speculative plan.
    Reconcile the resource set with the
@@ -1165,7 +1460,8 @@ safely resume after revalidation.
    noninteractive approval also requires the dedicated destructive opt-in and
    cannot bypass identity, drift, backup-policy, or plan checks.
 6. Quiesce/disable Manager tasks and monitoring writes as designed, then perform
-   any required final ScyllaDB service shutdown. Do not individually decommission
+   any required final ScyllaDB service shutdown and storage retirement/
+   disposition verification while hosts remain reachable. Do not individually decommission
    every node unless the supported full-cluster procedure specifically requires
    it.
 7. Apply exactly the reviewed saved destroy plan with
@@ -1184,10 +1480,10 @@ safely resume after revalidation.
    fictitious live inventory. Handle state as sensitive data under
    [Terraform state guidance](https://developer.hashicorp.com/terraform/language/state).
 9. Mark the cluster destroyed and retain the converged Terraform state,
-   sanitized diagnostics, tombstone, plan digest, and operation journal under
-   the canonical cluster root. Remove only ephemeral credentials/generated
-   connection data according to retention policy; never silently erase lifecycle
-   evidence.
+   sanitized diagnostics, tombstone, plan digest, retained-volume ownership/
+   disposition records, and operation journal under the canonical cluster root.
+   Remove only ephemeral credentials/generated connection data according to
+   retention policy; never silently erase lifecycle evidence.
 
 ### Redeploy
 
@@ -1196,25 +1492,32 @@ safely resume after revalidation.
 - **1.** For every scope: `ansible/playbooks/inventory-preflight.yml`,
   `ansible/playbooks/connectivity-check.yml`, conditional
   `ansible/playbooks/scylla-health.yml` when Scylla is in scope, and
-  `ansible/playbooks/evidence-collect.yml`.
+  `ansible/playbooks/storage-discover.yml` plus
+  `ansible/playbooks/evidence-collect.yml`. Established storage is validation
+  only and must never invoke `ansible/playbooks/storage-prepare.yml`.
 - **2 — service scope.** `ansible/playbooks/service-converge.yml` with one
   allowlisted service/tag set and explicit host limit.
 - **2 — host scope.** After any approved Terraform replacement,
   `ansible/playbooks/connectivity-check.yml` then
-  `ansible/playbooks/base-os.yml`, followed only by the host role playbook:
+  `ansible/playbooks/base-os.yml` and
+  `ansible/playbooks/storage-discover.yml`; a newly replaced stateless service
+  host runs `ansible/playbooks/storage-prepare.yml` only after Python validates
+  its new/retained manifest, followed by the host role playbook:
   `ansible/playbooks/jump-host-configure.yml`,
   `ansible/playbooks/manager-server.yml`,
   `ansible/playbooks/monitoring-stack.yml`, or the Scylla `replace-node`
   sequence; optionally apply `ansible/playbooks/manager-agent.yml` and
   `ansible/playbooks/monitoring-agent.yml` on Scylla hosts.
 - **2 — cluster scope.** `ansible/playbooks/base-os.yml`,
+  `ansible/playbooks/storage-discover.yml`,
   `ansible/playbooks/scylla-node.yml`,
   `ansible/playbooks/manager-server.yml`,
   `ansible/playbooks/monitoring-stack.yml`, and
   `ansible/playbooks/manager-agent.yml`,
   `ansible/playbooks/monitoring-agent.yml`, then
   `ansible/playbooks/monitoring-targets.yml`, each limited to its role and
-  omitting any no-change/out-of-scope playbook.
+  omitting any no-change/out-of-scope playbook. It never runs storage
+  preparation for established hosts.
 - **3.** `ansible/playbooks/scylla-health.yml` where applicable, then
   `ansible/playbooks/evidence-collect.yml`. Topology mutation playbooks are
   forbidden except through the delegated add/remove/replace workflow.
@@ -1224,13 +1527,15 @@ safely resume after revalidation.
    cluster-wide reconciliation. Reject an unscoped request.
 2. Acquire the lock and reconcile metadata, Terraform state, fresh
    Terraform-output inventory, provider identities, live membership, and the
-   selected scope. Stop on topology/identity drift, including any existing
-   datacenter/rack mismatch, instead of interpreting it as permission to
-   recreate resources or relabel nodes.
+   selected scope. Run storage discovery for affected hosts and stop on
+   topology/identity/storage drift, including any existing datacenter/rack,
+   backend, device, ownership, or generation mismatch, instead of interpreting
+   it as permission to recreate resources, relabel nodes, or initialize disks.
 3. Produce a scope-specific preview: Ansible-only service convergence,
    Terraform no-op/reconciliation plus Ansible for infrastructure configuration,
    or an explicitly identified host reprovision. By default, `redeploy` means
-   reapply/reconcile, not destroy and recreate. Use
+   reapply/reconcile, not destroy and recreate; established storage is validated
+   but never reformatted. Use
    [Ansible check/diff mode](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html)
    only as a preview with documented limitations and use
    [Terraform plan](https://developer.hashicorp.com/terraform/cli/commands/plan)
@@ -1255,8 +1560,9 @@ safely resume after revalidation.
    rollback is limited to an explicitly tested configuration rollback, never an
    inferred infrastructure destroy.
 8. Refresh outputs/inventory when infrastructure changed, then validate ring,
-   services, SSH routes, Manager, and monitoring for the requested scope and
-   record plan/config/inventory digests plus observed health.
+   services, storage identity/mounts, SSH routes, Manager, and monitoring for
+   the requested scope and record plan/config/inventory/storage digests plus
+   observed health.
 
 ### Refresh-monitoring
 
@@ -1313,6 +1619,7 @@ safely resume after revalidation.
 - **1.** `ansible/playbooks/inventory-preflight.yml`,
   `ansible/playbooks/connectivity-check.yml`,
   `ansible/playbooks/scylla-health.yml` where applicable,
+  `ansible/playbooks/storage-discover.yml`,
   `ansible/playbooks/manager-tasks.yml` with inspect/quiesce action, and
   `ansible/playbooks/evidence-collect.yml`.
 - **2.** `ansible/playbooks/os-upgrade-preflight.yml` serially for every scoped
@@ -1323,11 +1630,15 @@ safely resume after revalidation.
   `ansible/playbooks/os-reprovision-prepare.yml`, then Python checkpoints and
   Terraform replaces the host. After fresh inventory, run
   `ansible/playbooks/connectivity-check.yml`,
-  `ansible/playbooks/base-os.yml`, then exactly the role path:
+  `ansible/playbooks/base-os.yml`,
+  `ansible/playbooks/storage-discover.yml`, and, only for a new/approved
+  retained non-Scylla data device, `ansible/playbooks/storage-prepare.yml`, then
+  exactly the role path:
   `ansible/playbooks/jump-host-configure.yml` for a jump host,
   `ansible/playbooks/manager-server.yml` for Manager, or
   `ansible/playbooks/monitoring-stack.yml` for monitoring. A Scylla host must
   delegate to the `replace-node` sequence, including
+  `ansible/playbooks/storage-prepare.yml`,
   `ansible/playbooks/scylla-node.yml`,
   `ansible/playbooks/scylla-replace-dead.yml`,
   `ansible/playbooks/manager-agent.yml`, and
@@ -1346,15 +1657,18 @@ safely resume after revalidation.
    governs ScyllaDB product/package paths but does not by itself authorize an
    arbitrary guest-OS major upgrade.
 2. Acquire the lock and reconcile metadata, Terraform state, fresh
-   Terraform-output inventory, provider image metadata, live membership, and any
-   prior upgrade journal. Stop on drift or uncertain host generation.
+   Terraform-output inventory, provider image metadata, storage manifests/
+   prepared records, live membership, and any prior upgrade journal. Run
+   read-only device discovery and stop on drift or uncertain host/storage
+   generation.
 3. Validate backups, ring/schema health, streaming/repair activity, free
    capacity, failure-domain tolerance, jump-host path redundancy, and
    Manager/monitoring availability. Refuse to begin if loss of one scoped host
    would violate policy.
 4. Generate a per-host preflight/package/reboot plan and deterministic order.
    Call out that in-place package upgrade versus provider-image reprovision has
-   different Terraform and data implications; until later design approves image
+   different Terraform and data implications, especially unrecoverable local
+   NVMe and retained Block Volume ownership. Until later design approves image
    reprovision, it is not an implicit part of `upgrade-os`, and Scylla host
    reprovision must use replacement semantics. Consult the
    [OCI Compute image lifecycle documentation](https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm)
@@ -1365,8 +1679,9 @@ safely resume after revalidation.
    separate replacement confirmation if a future provider-image path is used.
 6. Process exactly one host at a time. For a Scylla node, drain/coordinate only
    as required by version-specific guidance, apply the OS role, reboot if
-   needed, restore service, and wait for membership, schema, token, and
-   application health before continuing. Use the
+   needed, verify the established storage devices/RAID/mounts without running
+   preparation or wipe, restore service, and wait for membership, schema, token,
+   and application health before continuing. Use the
    [ScyllaDB administrator procedures](https://docs.scylladb.com/manual/stable/operating-scylla/)
    and pinned [Ansible roles source](https://github.com/scylladb/scylla-ansible-roles)
    for the target release rather than promising a universal package sequence.
@@ -1379,8 +1694,8 @@ safely resume after revalidation.
    create a second Scylla identity or stale address.
 9. After all hosts, refresh Terraform output/inventory if provider attributes
    changed, rerun cluster/SSH/Manager/monitoring health checks, verify OS
-   versions and no pending reboot, and record each host result plus final
-   topology and digests.
+   versions, established storage identities/mounts, and no pending reboot, and
+   record each host result plus final topology and digests.
 
 ### Check-jump-hosts
 
@@ -1446,7 +1761,9 @@ JSON is schema-validated before use.
 
 - `--dry-run` resolves and validates inputs, reconciles read-only state, and
   shows intended phases without claiming that Ansible check mode predicts every
-  change.
+  change. Storage dry-run may resolve a provisional backend and run read-only
+  discovery on existing hosts, but it never creates attachments, emits a wipe
+  token, formats, assembles RAID, mounts, or finalizes an `auto` fallback.
 - `--plan` creates Terraform plans and Ansible/check previews where safe, but
   does not apply.
 - Mutating operations summarize cluster UUID, topology delta, resources, and
@@ -1454,6 +1771,9 @@ JSON is schema-validated before use.
 - `--yes` is allowed for controlled automation only with an additional explicit
   destructive-operation opt-in; it cannot bypass drift, identity, or health
   gates.
+- Storage wipe/reuse requires a separate manifest-bound confirmation and exact
+  device set after root/signature/ownership checks. General `--yes`, a Terraform
+  confirmation, or an Ansible tag cannot authorize a wildcard/destructive wipe.
 - Saved Terraform plans are short-lived protected artifacts bound to a state
   lineage/serial and configuration digest.
 - Logs are structured, timestamped, operation-scoped, redacted, and written with
@@ -1474,8 +1794,9 @@ JSON is schema-validated before use.
 
 Each mutating phase writes an atomic operation record. On restart, the tool does
 not blindly continue: it reacquires the lock, refreshes Terraform outputs,
-inventory, provider identity, and live health, then determines whether a phase
-is complete, safely repeatable, or requires intervention.
+inventory, provider identity, storage manifest/device facts/ownership records,
+and live health, then determines whether a phase is complete, safely repeatable,
+or requires intervention.
 
 Classify topology drift:
 
@@ -1483,6 +1804,11 @@ Classify topology drift:
 - **benign configuration drift**: can be shown and reconciled by a reviewed plan;
 - **identity or membership conflict**: blocks sensitive/destructive action; or
 - **orphaned infrastructure/state**: requires explicit import/recovery workflow.
+
+Selected storage backend, device identity, ownership, and preparation-generation
+drift is an identity/runtime conflict. A missing ephemeral device after
+instance replacement is handled only by the replacement journal; a generic
+rerun never recreates RAID or mounts over unexpected media.
 
 Idempotency acceptance includes unchanged Terraform plans after convergence,
 unchanged generated inventory bytes, and no material Ansible changes on a second
@@ -1526,10 +1852,27 @@ journal the phase, and return a conventional nonzero cancellation status.
   collision/uniqueness checks, persistence, and refusal to relabel existing
   nodes;
 - stable node allocation/tombstones;
+- role-specific storage-policy precedence/defaults; rejection of local NVMe for
+  unsupported roles; OCI shape-capability fixture resolution; `auto`,
+  `local-nvme`, and `block-volume` decisions; and fallback refusal after the
+  initialization boundary;
+- forced-local absent/undersized/multiple/ambiguous-device failures; explicit
+  block mode excluding local NVMe; stable selection persistence; and backend/
+  policy/storage-generation drift classification;
 - versioned manifest serialization of required Scylla and null non-Scylla
-  datacenter/rack fields;
+  datacenter/rack fields plus every storage backend/device/attachment/capacity/
+  encryption/performance/layout/ephemeral/retention field;
 - inventory schema validation, topology hostvar/group propagation, and
-  datacenter/rack conflict/drift classification;
+  datacenter/rack/storage-manifest conflict/drift classification;
+- deterministic provider-to-OS device correlation under changed enumeration
+  order, absent/duplicate serials, root-on-partition/mapper/RAID ancestry,
+  unexpected signatures, mounted/open holders, stale ownership markers, and
+  retained-volume ownership;
+- exact wipe confirmation/token validation, root-disk protection, and no
+  wildcard/enumeration-order selectors in generated Ansible inputs;
+- dry-run/check behavior proving storage resolution/discovery is read-only and
+  that preparation, retirement, wipe, and post-initialization `auto` fallback
+  are not selected;
 - operation-to-playbook mapping resolution, exact catalog names, conditional
   variants, ordering, role/stable-ID limits, allowlisted extra-variable schemas,
   and fresh-inventory preconditions;
@@ -1547,7 +1890,9 @@ change a real ScyllaDB cluster.
 ### Contract and integration tests
 
 - Golden fixtures for supported Terraform JSON output versions, including
-  datacenter/rack values, null role conventions, and schema-upgrade failures.
+  datacenter/rack values, null role conventions, local-NVMe/block/boot-only
+  storage manifests, Block Volume attachment/retention variants, unknown
+  storage fields, and schema-upgrade failures.
 - Generated inventory checked by `ansible-inventory`, with exact topology
   hostvars and expected derived datacenter/rack groups.
 - A catalog contract test parses/loads the declared operation mapping and fails
@@ -1557,7 +1902,10 @@ change a real ScyllaDB cluster.
 - Terraform `fmt`, `validate`, and plan against mocked/test modules where
   practical.
 - Ansible syntax checks, lint, check mode, and idempotence in disposable local
-  containers/VMs.
+  containers/VMs. Loopback-device tests cover blank preparation, existing
+  signatures, device-order changes, reboot-stable UUID/by-id mounts, exact
+  ownership markers, check-mode no-change discovery, and refusal to reinitialize
+  established storage.
 - Fake process runner and provider adapters for failure, timeout, partial apply,
   stale lock, and interrupted operation scenarios.
 - Optional explicitly gated OCI sandbox tests with isolated compartments,
@@ -1568,8 +1916,10 @@ change a real ScyllaDB cluster.
 
 In an approved ephemeral environment: deploy; no-op rerun; scale out; refresh
 monitoring; replace a failed node; scale in; rolling OS upgrade; interruption and
-resume; drift refusal; and full destroy. Capture topology and health evidence at
-each stage.
+resume; drift refusal; and full destroy. Cover both a Block Volume path and,
+only on a verified shape that provides it, local-NVMe loss/replacement/rebuild.
+Verify retained Block Volumes survive deletion as declared and are not attached
+to a different logical node. Capture topology and health evidence at each stage.
 
 CI intent: formatting, linting, static type checking, unit tests, contract tests,
 Terraform formatting/validation/security checks, Ansible lint/syntax, dependency
@@ -1584,7 +1934,8 @@ implementation and packaging files exist.
   exit codes, threat model, and topology policy.
 - Acceptance: fixture-backed examples cover zero/multiple jump hosts, uneven
   zones, manager/monitor separation, explicit and provider-default
-  datacenter/rack mappings, and configuration precedence.
+  datacenter/rack mappings, role-specific storage defaults, all three Scylla
+  storage modes, and configuration precedence.
 
 ### Phase 1 — safe CLI and state foundation
 
@@ -1600,16 +1951,19 @@ implementation and packaging files exist.
   outputs.
 - Acceptance: `fmt`/`validate` pass; sandbox plan is least-privilege; per-cluster
   isolation and lock behavior are demonstrated; output fixtures preserve the
-  resolved datacenter/rack schema and validate.
+  resolved datacenter/rack and versioned storage schemas and validate; explicit
+  block mode creates only declared volumes/attachments and records disposition.
 
 ### Phase 3 — inventory and baseline Ansible
 
 - Implement deterministic transformation, SSH trust/routing, base role, ScyllaDB,
-  separate Manager, and monitoring playbooks.
+  storage discovery/preparation/retirement, separate Manager, and monitoring
+  playbooks.
 - Acceptance: zero/one/multiple jump-host inventories validate; repeat Ansible
   run is idempotent; exact datacenter/rack hostvars reach Scylla configuration
-  and are verified from Scylla; relabel drift is refused; no secret enters
-  inventory or logs.
+  and are verified from Scylla; storage preparation excludes roots and unknown
+  devices, survives device-order/reboot changes, and refuses signatures/backend
+  drift; relabel drift is refused; no secret enters inventory or logs.
 
 ### Phase 4 — deploy and reconciliation
 
@@ -1617,6 +1971,8 @@ implementation and packaging files exist.
 - Acceptance: ephemeral cluster deploys, converges on rerun, survives a
   controlled interruption, reports injected drift before mutation, and records
   the expected ordered/limited playbook invocations with redacted variables.
+  `auto` selection/fallback is demonstrated before initialization and refused
+  afterward.
 
 ### Phase 5 — node lifecycle and scaling
 
@@ -1626,14 +1982,18 @@ implementation and packaging files exist.
   target's datacenter/rack, and each workflow gates on replication/topology
   health and updates Manager/monitoring. Tests prove logical Scylla topology
   playbooks finish before corresponding Terraform deletion and forbidden
-  live/dead variants cannot run together.
+  live/dead variants cannot run together. Local-NVMe replacement rebuilds from
+  the cluster, while retained Block Volume reuse requires exact ownership
+  validation.
 
 ### Phase 6 — maintenance and destruction
 
 - Add redeploy, refresh-monitoring, upgrade-os, check-jump-hosts, and full
   destroy.
 - Acceptance: rolling operations stop on failed health gates; destroy refuses
-  conflict and removes only reviewed resources; tombstone remains.
+  conflict and removes only reviewed resources; declared Block Volume retention
+  is honored, local-NVMe loss is confirmed, data disks are not reinitialized by
+  redeploy/OS upgrade, and the tombstone remains.
 
 ### Phase 7 — hardening and provider extensibility
 
@@ -1649,8 +2009,14 @@ implementation and packaging files exist.
 - Region/availability-domain input and whether OCI zone aliases are accepted.
 - Default network architecture, egress path, operator ingress CIDRs, IPv6, DNS,
   and private-service access.
-- Storage layout and data durability policy per ScyllaDB-supported instance
-  shape.
+- Concrete minimum local-device count/capacity by approved Scylla shape,
+  Block Volume count/size/VPU/attachment defaults per role, and provider quota/
+  cost limits.
+- Version-matrix-specific RAID/filesystem/mount/data-commitlog-cache-log layout,
+  local-NVMe guest-encryption support, ownership-marker format, wipe UX, Block
+  Volume backup/retention defaults, CHAP secret handoff, and whether any
+  retained-data migration is supported. Until resolved, no universal layout or
+  automatic retained-volume reuse is promised.
 - Replication/failure-domain policy and which odd/asymmetric topologies warn
   versus fail.
 - Backup provider, required freshness, retention, encryption, and restore test
@@ -1700,6 +2066,12 @@ Validate behavior against current versions of these primary sources:
 ### OCI
 
 - [OCI documentation](https://docs.oracle.com/en-us/iaas/Content/home.htm)
+- [OCI Compute shapes and local-disk capabilities](https://docs.oracle.com/en-us/iaas/Content/Compute/References/computeshapes.htm)
+- [Protecting data on local NVMe devices](https://docs.oracle.com/en-us/iaas/Content/Compute/References/nvmedeviceinformation.htm)
+- [OCI instance termination and NVMe erasure](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/terminatinginstance.htm)
+- [OCI Block Volume overview](https://docs.oracle.com/en-us/iaas/Content/Block/Concepts/overview.htm)
+- [OCI Block Volume performance and VPUs](https://docs.oracle.com/en-us/iaas/Content/Block/Concepts/blockvolumeperformance.htm)
+- [Attaching Block Volumes](https://docs.oracle.com/en-us/iaas/Content/Block/Tasks/attach-compute-volume-attachment.htm)
 - [OCI networking](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/overview.htm)
 - [OCI network security groups](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/networksecuritygroups.htm)
 - [OCI Compute instance metadata](https://docs.oracle.com/en-us/iaas/Content/Compute/Tasks/gettingmetadata.htm)
@@ -1718,6 +2090,8 @@ Validate behavior against current versions of these primary sources:
 - [Add-node/out-scale procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/add-node-to-cluster.html)
 - [Remove-node/down-scale procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/remove-node.html)
 - [Dead-node replacement procedure](https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html)
+- [ScyllaDB system configuration and storage setup](https://docs.scylladb.com/manual/stable/getting-started/system-configuration.html)
+- [ScyllaDB hardware and storage requirements](https://docs.scylladb.com/manual/stable/getting-started/system-requirements.html)
 
 Use the version-specific node add/remove/replace, rolling restart/upgrade,
 repair, backup, and recovery procedures linked from those official roots. Do not
