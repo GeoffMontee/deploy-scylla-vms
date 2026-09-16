@@ -10,6 +10,16 @@ creates, changes, or destroys infrastructure.
 
 Version: `26.9.1`
 
+## Table of contents
+
+- [Intended capabilities](#intended-capabilities)
+- [Planned stack](#planned-stack)
+- [Configuration and safety principles](#configuration-and-safety-principles)
+- [Planned usage — not functional](#planned-usage--not-functional)
+- [Repository contents](#repository-contents)
+- [Limitations](#limitations)
+- [Documentation to consult during implementation](#documentation-to-consult-during-implementation)
+
 ## Intended capabilities
 
 The design in `PLAN.md` covers:

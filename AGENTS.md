@@ -172,6 +172,26 @@ and refusal paths, not only success.
 - Update user documentation whenever CLI arguments, environment variables,
   safety behavior, state layout, supported versions, or operational workflows
   change.
+- A Markdown document that already contains a table of contents must update it
+  in the same change whenever included headings are added, renamed, removed, or
+  reordered. A heading edit is incomplete while its TOC is stale.
+- Use GitHub-compatible generated anchor fragments and verify every TOC target
+  against the document's actual headings. Account for punctuation, inline code,
+  numeric/version prefixes, Unicode punctuation, and GitHub's duplicate-heading
+  suffixes; prefer a small unique-heading rename over fragile duplicate links
+  when that improves durability.
+- Keep TOC depth consistent and useful: include the document's main sections and
+  only the subsections needed for navigation. Do not include the
+  `Table of contents` heading itself, link multiple entries to the wrong
+  duplicate anchor, or leave stale entries after reordering.
+- Maintain TOCs manually unless and until this repository adds and approves a
+  generator/check command. Do not invent such tooling or claim that a TOC check
+  currently exists.
+- Add a TOC to a new Markdown document when it is substantial enough to benefit
+  from navigation: normally six or more meaningful H2/H3 sections, roughly 200
+  or more lines, or a shorter document whose nested structure or repeated
+  reference use makes navigation difficult. Small linear documents do not need
+  one.
 - Keep examples clearly marked planned until runnable, and test runnable examples
   once implementation exists.
 - Update `RELEASE_NOTES.md` for user-visible changes. Update `VERSION` only when
