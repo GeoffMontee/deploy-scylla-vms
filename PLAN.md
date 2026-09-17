@@ -1368,6 +1368,8 @@ prompts before each approved Terraform apply; `--non-interactive` requires
   registration/task actions, followed by `ansible/playbooks/scylla-health.yml`
   and `ansible/playbooks/evidence-collect.yml`.
 
+**Operation procedure:**
+
 1. Resolve configuration, validate the cluster name/topology, and acquire the
    new cluster's state lock; reject an existing cluster identity or unexpected
    Terraform state unless an interrupted deploy journal is safe to resume.
@@ -1486,6 +1488,8 @@ the single-explicit-identity distinction from `scale-out`.
   `ansible/playbooks/manager-tasks.yml` with validate/resume action, and
   `ansible/playbooks/evidence-collect.yml`.
 
+**Operation procedure:**
+
 1. Require exactly one new logical node identity and target zone, resolve its
    persisted cluster datacenter and zone rack plus requested storage policy, and
    reject an existing/tombstoned ID, undeclared/unmapped zone, or request that
@@ -1584,6 +1588,8 @@ of `--max-new-nodes`; that flag bounds total scope, not concurrency.
   `ansible/playbooks/monitoring-targets.yml`,
   `ansible/playbooks/manager-tasks.yml` with validate/resume action, and
   `ansible/playbooks/evidence-collect.yml`.
+
+**Operation procedure:**
 
 1. Accept a desired per-zone topology, acquire the cluster lock, and calculate
    the expansion from stable current identities; reject decreases (which belong
@@ -1686,6 +1692,8 @@ wipe or replace.
   `ansible/playbooks/manager-tasks.yml` with validate/resume action,
   `ansible/playbooks/scylla-health.yml`, and
   `ansible/playbooks/evidence-collect.yml`.
+
+**Operation procedure:**
 
 1. Require one existing stable logical node ID, the observed failure state, and
    an explicit replacement reason; reject healthy-node replacement without a
@@ -1791,6 +1799,8 @@ live/dead mode, disposition override, or acknowledgement.
   `ansible/playbooks/scylla-health.yml`, and
   `ansible/playbooks/evidence-collect.yml` on surviving hosts.
 
+**Operation procedure:**
+
 1. Require exactly one existing stable node ID and whether it is a healthy
    decommission or failed-node removal; full-cluster teardown belongs to
    `destroy`, and topology-based contraction belongs to `scale-in`.
@@ -1884,6 +1894,8 @@ mode/confirmation completion.
   `ansible/playbooks/scylla-health.yml`, and
   `ansible/playbooks/evidence-collect.yml`.
 
+**Operation procedure:**
+
 1. Accept lower desired per-zone counts, acquire the lock, and reject increases
    (which belong to `scale-out`) or mixed deltas that obscure the contraction.
 2. Reconcile metadata, Terraform state, fresh Terraform-output inventory,
@@ -1959,6 +1971,8 @@ provide confirmation.
   per-volume disposition before Terraform apply. No Ansible playbook may run
   after Terraform destroys the hosts; Python/provider/state verification
   completes teardown.
+
+**Operation procedure:**
 
 1. Require the full-cluster operation explicitly; reject node selectors and
    direct callers to `destroy-node`/`scale-in` for individual membership changes.
@@ -2073,6 +2087,8 @@ extra vars, Terraform targets, or commands.
   `ansible/playbooks/evidence-collect.yml`. Topology mutation playbooks are
   forbidden except through the delegated add/remove/replace workflow.
 
+**Operation procedure:**
+
 1. Require an explicit scope and target: `service` for selected configuration/
    service convergence, `host` for one stable host, or `cluster` for
    cluster-wide reconciliation. Reject an unscoped request.
@@ -2152,6 +2168,8 @@ as an estimate.
   `ansible/playbooks/manager-agent.yml`, or
   `ansible/playbooks/monitoring-agent.yml`; agent/package drift belongs to an
   explicit `redeploy` scope.
+
+**Operation procedure:**
 
 1. Acquire the cluster lock, read current Terraform state/output without an
    infrastructure apply, regenerate/validate inventory, and compare stable host
@@ -2247,6 +2265,8 @@ change targets, strategy, image/channel, or policy from the journal.
 - **5.** After all hosts, `ansible/playbooks/manager-tasks.yml` with
   validate/resume action and `ansible/playbooks/evidence-collect.yml`.
 
+**Operation procedure:**
+
 1. Require an approved source/target OS and repository policy, explicit role/
    host scope, maintenance window, and evidence that the OS change is compatible
    with installed ScyllaDB, Manager, monitoring, Ansible, and OCI tooling. Do not
@@ -2324,6 +2344,8 @@ firewall repair, and confirmation/mutation flags are not accepted. `--json` and
 - **2.** `ansible/playbooks/connectivity-check.yml`, limited to `jump_hosts` and
   their assigned target paths. No configuration, topology, OS, service, or
   evidence-collection playbook is permitted.
+
+**Operation procedure:**
 
 1. Run read-only by default, acquiring a shared/read cluster lock where
    supported (otherwise the normal lock), and reject flags that imply Terraform
