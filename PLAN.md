@@ -12,6 +12,7 @@
   - [Resolving node counts per zone](#resolving-node-counts-per-zone)
   - [Scylla datacenter and rack topology](#scylla-datacenter-and-rack-topology)
   - [Configuration precedence](#configuration-precedence)
+  - [Environment variable registry](#environment-variable-registry)
 - [4. Architecture and module layout](#4-architecture-and-module-layout)
   - [Core models and schemas](#core-models-and-schemas)
   - [Stable node identity](#stable-node-identity)
@@ -253,55 +254,238 @@ replication, repair/streaming, availability, and rollback implications.
 
 ### Configuration precedence
 
-For non-secret settings other than the state root:
+For a new cluster or another value not yet persisted, non-secret settings other
+than the state root resolve in this order:
 
 1. explicit CLI option;
 2. documented environment variable;
 3. optional config file value, if config-file support is implemented;
 4. built-in default.
 
-Config-file values are defaults below environment variables. The state root has
-one narrower, canonical precedence with no config-file input:
+An explicitly supplied CLI value therefore wins when both CLI and environment
+values are present. Config-file values are defaults below environment variables.
+The state root has one narrower, canonical precedence with no config-file input:
 `--state-dir` > `DEPLOY_SCYLLA_VMS_STATE_DIR` > platform-aware default. The
 implementation must expose the resolved non-secret configuration and absolute
 state root in dry-run output.
 
-Examples of non-secret environment defaults:
-
-- `DEPLOY_SCYLLA_VMS_CLOUD_PROVIDER`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_INSTANCE_TYPE`
-- `DEPLOY_SCYLLA_VMS_MANAGER_INSTANCE_TYPE`
-- `DEPLOY_SCYLLA_VMS_MONITORING_INSTANCE_TYPE`
-- `DEPLOY_SCYLLA_VMS_JUMP_HOST_INSTANCE_TYPE`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_BACKEND`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_DEVICE_COUNT`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_TOTAL_GIB`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_COUNT`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_SIZE_GIB`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_VPUS_PER_GB`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_ATTACHMENT_TYPE`
-- `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_RETENTION`
-
 The structured non-secret config model contains one `StoragePolicy` per host
-role. CLI/env options initially expose the commonly changed Scylla fields above;
-all other policy fields use the same CLI > environment > config file > built-in
-default precedence when/if exposed. Scylla defaults to `auto`. Manager and
-monitoring default to explicit `block-volume` for their application data, with
-separate capacity/performance/retention fields; they never consume local NVMe
-implicitly. Jump hosts default to `boot-only`. `local-nvme` is initially invalid
-for non-Scylla roles. A config field that has no approved CLI/env spelling must
-not be silently overridden through an ad hoc variable.
+role. CLI/environment options expose only fields in the registry below; a config
+field with no approved spelling cannot be overridden through an ad hoc variable.
+Scylla defaults to `auto`. Manager and monitoring use explicit Block Volumes and
+never consume local NVMe implicitly. Jump hosts default to `boot-only`.
 
-Secret values are accepted **only from environment variables**. Secret CLI
-flags, secret config-file keys, and persistent credential files created by the
-tool will not exist. Required secret names are validated without printing
-values. OCI authentication must use a supported OCI SDK/provider method that is
-compatible with this environment-only secret-input policy; consult the official
-auth documentation and define the exact variable contract before implementation.
-If an external tool unavoidably requires a file, materialize it from an
-environment value as an owner-only, short-lived runtime file and remove it
-reliably. Secret values must be redacted from logs, exceptions, displayed
-subprocess environments, Terraform plans, inventory, and journals.
+For an existing cluster, persisted cluster metadata is the baseline before these
+sources are considered. A differing CLI or environment value is an identity
+assertion or proposed mutation; it is accepted only by an operation whose
+allowlist permits that change and only after reconciliation. Neither source may
+silently retopologize, relabel, change initialized storage, replace, wipe, or
+destroy resources.
+
+### Environment variable registry
+
+This section is the normative environment contract. Variables beginning with
+`DEPLOY_SCYLLA_VMS_` are owned by this application. The separately grouped OCI,
+SSH, Terraform, and Ansible names are standard tool/runtime variables that are
+either narrowly passed through or set internally. Any unknown
+`DEPLOY_SCYLLA_VMS_*` name is a configuration error, not an ignored typo.
+
+Parsing is shared with the corresponding CLI/config field:
+
+- non-secret strings are UTF-8, trimmed, and must be non-empty; opaque secret
+  values are not trimmed because whitespace can be significant, but an empty
+  secret is invalid and is not equivalent to unset;
+- enums are trimmed and ASCII-lowercased before exact allowlist matching;
+  environment booleans, if introduced, accept only `true` or `false`, while the
+  current encryption switches deliberately use `enabled` or `disabled`;
+- integers are canonical base-10 ASCII values with the documented zero/positive
+  range; floats are finite decimal values, and all duration variables are
+  seconds with no unit suffix;
+- paths expand a leading `~` only, never shell syntax or embedded environment
+  references, and are normalized to absolute paths before path, symlink,
+  ownership, and permission validation; and
+- a registry entry typed as an array or object would use strict UTF-8 JSON.
+  Comma splitting is never used. The initial registry has no complex-valued
+  variable because repeatable selectors/maps remain CLI/config-only.
+
+Unset means no value was supplied. Empty, whitespace-only non-secret, malformed,
+out-of-range, duplicate, unknown, or conditionally forbidden values fail before
+Terraform, Ansible, SSH, or OCI execution.
+
+#### Core and runtime
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `DEPLOY_SCYLLA_VMS_CLOUD_PROVIDER` | Enum; initially `oci` | `oci` | Yes — `--cloud-provider` | Select the provider adapter. |
+| `DEPLOY_SCYLLA_VMS_CLUSTER_NAME` | `[a-z][a-z0-9-]{0,62}` | Unset; required for every operation | Yes — `--cluster-name` | Select the canonical cluster identity/root. |
+| `DEPLOY_SCYLLA_VMS_STATE_DIR` | Absolute or `~`-expandable path | `platformdirs.user_state_path("deploy-scylla-vms", appauthor=False)` | Yes — `--state-dir` | Select the external application state root. |
+| `DEPLOY_SCYLLA_VMS_CONFIG` | Readable non-secret config path | Unset | Yes — `--config` | Load schema-validated defaults. |
+
+#### OCI provider, network, and service placement
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `DEPLOY_SCYLLA_VMS_OCI_REGION` | OCI region key | Unset; required for deploy, otherwise derived from persisted cluster config | Yes — `--oci-region` | Select/assert the deployment region. |
+| `DEPLOY_SCYLLA_VMS_OCI_COMPARTMENT_ID` | Compartment OCID | Unset; required for deploy, otherwise derived from persisted cluster config | Yes — `--oci-compartment-id` | Select/assert the managed compartment. |
+| `DEPLOY_SCYLLA_VMS_OCI_AUTH_MODE` | `api-key`, `instance-principal`, or `resource-principal` | Unset; required, with no implicit profile | Yes — `--oci-auth-mode` | Select the allowlisted authentication flow. |
+| `DEPLOY_SCYLLA_VMS_NETWORK_MODE` | `create` or `existing` | `create` for deploy, otherwise derived from persisted cluster config | Yes — `--network-mode` | Choose managed network creation or an existing VCN. |
+| `DEPLOY_SCYLLA_VMS_OCI_VCN_ID` | VCN OCID | Required with `existing`; unset/forbidden with `create` unless adoption is later designed | Yes — `--oci-vcn-id` | Select an existing VCN. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_ZONE` | One declared zone key | Deterministically derived from deploy zones; otherwise persisted | Yes — `--manager-zone` | Place/assert the Manager host zone. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_ZONE` | One declared zone key | Derived with failure-domain separation when possible; otherwise persisted | Yes — `--monitoring-zone` | Place/assert the monitoring host zone. |
+
+Role-to-subnet maps, operator CIDRs, zones, node counts, and rack maps are
+repeatable CLI/config structures and intentionally have no environment encoding.
+
+#### Topology and instance shapes
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_DATACENTER` | Normalized topology name | Provider-derived when unset for deploy; otherwise persisted | Yes — `--scylla-datacenter` | Set/assert the stable Scylla datacenter label. |
+| `DEPLOY_SCYLLA_VMS_JUMP_HOST_COUNT` | Base-10 integer `>= 0` | `0` for deploy; otherwise persisted | Yes — `--jump-host-count` | Set jump-host count; zero differs from unset. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_INSTANCE_TYPE` | OCI shape string | Unset; required for deploy, otherwise persisted new-node policy | Yes — `--scylla-instance-type` | Select/assert the Scylla shape. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_INSTANCE_TYPE` | OCI shape string | Unset; required for deploy, otherwise persisted | Yes — `--manager-instance-type` | Select/assert the Manager shape. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_INSTANCE_TYPE` | OCI shape string | Unset; required for deploy, otherwise persisted | Yes — `--monitoring-instance-type` | Select/assert the monitoring shape. |
+| `DEPLOY_SCYLLA_VMS_JUMP_HOST_INSTANCE_TYPE` | OCI shape string | Required when jump-host count is positive; otherwise unset/persisted | Yes — `--jump-host-instance-type` | Select/assert the jump-host shape. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_COUNT` | Base-10 integer; initially exactly `1` | `1` | Yes — `--manager-count` | Make the separate Manager-host count explicit. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_COUNT` | Base-10 integer; initially exactly `1` | `1` | Yes — `--monitoring-count` | Make the separate monitoring-host count explicit. |
+
+#### Storage
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_BACKEND` | `auto`, `local-nvme`, or `block-volume` | `auto` for deploy; otherwise persisted | Yes — `--scylla-storage-backend` | Request the pre-initialization Scylla backend. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_DEVICE_COUNT` | Base-10 integer `>= 1` | Required for `auto`/`local-nvme`; unset for explicit block | Yes — `--scylla-storage-min-device-count` | Set the local-device adequacy floor. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_MIN_TOTAL_GIB` | Positive base-10 integer GiB | Required for `auto`/`local-nvme`; unset for explicit block | Yes — `--scylla-storage-min-total-gib` | Set the usable local-capacity floor. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_STORAGE_LAYOUT` | `single` or `raid0` | `single` for one device; required for multiple | Yes — `--scylla-storage-layout` | Select the approved device layout. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_COUNT` | Base-10 integer `>= 1` | Required whenever block or `auto` fallback is possible | Yes — `--scylla-block-volume-count` | Declare exact data-volume count. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_SIZE_GIB` | Positive base-10 integer GiB | Required whenever block or fallback is possible | Yes — `--scylla-block-volume-size-gib` | Declare per-volume capacity. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_VPUS_PER_GB` | Provider-valid base-10 integer | Required whenever block or fallback is possible | Yes — `--scylla-block-volume-vpus-per-gb` | Declare Block Volume performance. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_ATTACHMENT_TYPE` | `iscsi` or `paravirtualized` | Required whenever block or fallback is possible | Yes — `--scylla-block-volume-attachment-type` | Select the attachment capability. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_RETENTION` | `retain` or `delete` | Required whenever block or fallback is possible | Yes — `--scylla-block-volume-retention` | Persist default removal disposition. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_KEY_ID` | KMS key OCID | Unset means OCI-managed at-rest key | Yes — `--scylla-block-volume-key-id` | Select a customer-managed key identifier. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_BLOCK_VOLUME_IN_TRANSIT_ENCRYPTION` | `enabled` or `disabled` | `disabled` pending provider/shape validation | Yes — `--scylla-block-volume-in-transit-encryption` | Request transport encryption. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_SIZE_GIB` | Positive base-10 integer GiB | Unset; required for deploy, otherwise persisted | Yes — `--manager-data-volume-size-gib` | Size Manager application storage. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_VPUS_PER_GB` | Provider-valid base-10 integer | Unset; required for deploy, otherwise persisted | Yes — `--manager-data-volume-vpus-per-gb` | Set Manager volume performance. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_ATTACHMENT_TYPE` | `iscsi` or `paravirtualized` | Unset; required for deploy, otherwise persisted | Yes — `--manager-data-volume-attachment-type` | Select Manager attachment capability. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_RETENTION` | `retain` or `delete` | `retain` for deploy; otherwise persisted | Yes — `--manager-data-volume-retention` | Persist Manager volume disposition. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_KEY_ID` | KMS key OCID | Unset means OCI-managed at-rest key | Yes — `--manager-data-volume-key-id` | Select a Manager customer-key identifier. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_DATA_VOLUME_IN_TRANSIT_ENCRYPTION` | `enabled` or `disabled` | `disabled` pending provider/shape validation | Yes — `--manager-data-volume-in-transit-encryption` | Request Manager transport encryption. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_SIZE_GIB` | Positive base-10 integer GiB | Unset; required for deploy, otherwise persisted | Yes — `--monitoring-data-volume-size-gib` | Size monitoring application storage. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_VPUS_PER_GB` | Provider-valid base-10 integer | Unset; required for deploy, otherwise persisted | Yes — `--monitoring-data-volume-vpus-per-gb` | Set monitoring volume performance. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_ATTACHMENT_TYPE` | `iscsi` or `paravirtualized` | Unset; required for deploy, otherwise persisted | Yes — `--monitoring-data-volume-attachment-type` | Select monitoring attachment capability. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_RETENTION` | `retain` or `delete` | `retain` for deploy; otherwise persisted | Yes — `--monitoring-data-volume-retention` | Persist monitoring volume disposition. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_KEY_ID` | KMS key OCID | Unset means OCI-managed at-rest key | Yes — `--monitoring-data-volume-key-id` | Select a monitoring customer-key identifier. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_DATA_VOLUME_IN_TRANSIT_ENCRYPTION` | `enabled` or `disabled` | `disabled` pending provider/shape validation | Yes — `--monitoring-data-volume-in-transit-encryption` | Request monitoring transport encryption. |
+
+#### SSH and Ansible non-secret configuration
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `DEPLOY_SCYLLA_VMS_SSH_USER` | Non-empty OS user string | Image/provider-derived for deploy; otherwise persisted | Yes — `--ssh-user` | Set/assert the remote login user. |
+| `DEPLOY_SCYLLA_VMS_SSH_PUBLIC_KEY_PATH` | Readable public-key path | Required when creating hosts unless an approved provider bootstrap supplies a key | Yes — `--ssh-public-key-path` | Supply public bootstrap material only. |
+
+The public-key path is non-secret, but its location can still disclose operator
+metadata and is redacted at lower log levels.
+
+#### Observability, maintenance, and timeouts
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `DEPLOY_SCYLLA_VMS_LOG_LEVEL` | `debug`, `info`, `warning`, or `error` | `info` | Yes — `--log-level` | Set redacted diagnostic verbosity. |
+| `DEPLOY_SCYLLA_VMS_LOCK_TIMEOUT_SECONDS` | Finite decimal seconds `>= 0` | `30`; zero fails immediately | Yes — `--lock-timeout-seconds` | Bound lock acquisition. |
+| `DEPLOY_SCYLLA_VMS_OPERATION_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `3600` | Yes — `--operation-timeout-seconds` | Bound one mutating operation. |
+| `DEPLOY_SCYLLA_VMS_BOOTSTRAP_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `7200` | Yes — `--bootstrap-timeout-seconds` | Bound each bootstrap/streaming gate. |
+| `DEPLOY_SCYLLA_VMS_REPLACEMENT_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `7200` | Yes — `--replacement-timeout-seconds` | Bound replacement streaming/health gates. |
+| `DEPLOY_SCYLLA_VMS_DECOMMISSION_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `7200` | Yes — `--decommission-timeout-seconds` | Bound each logical removal gate. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `600` | Yes — `--monitoring-timeout-seconds` | Bound monitoring reload/restart/health checks. |
+| `DEPLOY_SCYLLA_VMS_TARGET_OS_VERSION` | Approved version/release string | Unset; required for `upgrade-os` | Yes — `--target-os-version` | Declare the intended guest OS result. |
+| `DEPLOY_SCYLLA_VMS_OS_PACKAGE_CHANNEL` | Approved repository/channel ID | Required for in-place or potentially in-place `auto`; forbidden for reprovision-only | Yes — `--package-channel` | Select reviewed OS packages. |
+| `DEPLOY_SCYLLA_VMS_OCI_IMAGE_ID` | OCI image OCID | Required for reprovision; optional candidate for `auto`; forbidden for in-place | Yes — `--image-id` | Select a reviewed immutable image. |
+| `DEPLOY_SCYLLA_VMS_HEALTH_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `1800` | Yes — `--health-timeout-seconds` | Bound post-host health gates. |
+| `DEPLOY_SCYLLA_VMS_REBOOT_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `1800` | Yes — `--reboot-timeout-seconds` | Bound reboot/reconnect validation. |
+| `DEPLOY_SCYLLA_VMS_SSH_CONNECT_TIMEOUT_SECONDS` | Positive finite decimal seconds | `10` | Yes — `--connect-timeout-seconds` | Bound each jump-host SSH attempt. |
+| `DEPLOY_SCYLLA_VMS_JUMP_CHECK_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `300` | Yes — `--check-timeout-seconds` | Bound the complete jump-host check. |
+
+#### Credentials and secrets
+
+Secrets are environment-only, have no CLI/config equivalent or built-in value,
+and are consumed only when the selected auth/integration path requires them.
+Identifiers and secret-file/socket paths in this table are protected metadata
+even when they are not cryptographic secret bytes.
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `OCI_TENANCY_OCID` | Tenancy OCID | Unset; required for `api-key` | No — environment only | Supply OCI API-key tenancy identity. |
+| `OCI_USER_OCID` | User OCID | Unset; required for `api-key` | No — environment only | Supply OCI API-key user identity. |
+| `OCI_FINGERPRINT` | API-key fingerprint string | Unset; required for `api-key` | No — environment only | Identify the OCI signing key. |
+| `OCI_PRIVATE_KEY` | Multiline PEM private-key contents | Unset; required for `api-key` | No — environment only | Supply OCI signing material without a persistent key file. |
+| `OCI_PRIVATE_KEY_PASSWORD` | Opaque passphrase | Unset; required only for an encrypted OCI key | No — environment only | Unlock the OCI API private key. |
+| `OCI_RESOURCE_PRINCIPAL_VERSION` | Provider-supported version string | Unset; required in a resource-principal environment | No — environment only | Select the injected resource-principal contract. |
+| `OCI_RESOURCE_PRINCIPAL_RPST` | Opaque token or provider-supported token-file reference | Unset; required for `resource-principal` | No — environment only | Supply the injected resource-principal session token. |
+| `OCI_RESOURCE_PRINCIPAL_PRIVATE_PEM` | PEM contents or provider-supported protected-file reference | Unset; required for `resource-principal` | No — environment only | Supply injected resource-principal signing material. |
+| `OCI_RESOURCE_PRINCIPAL_REGION` | OCI region key | Unset; required for `resource-principal` and must match resolved region | No — environment only | Bind resource-principal context to its OCI region. |
+| `DEPLOY_SCYLLA_VMS_SSH_PRIVATE_KEY` | Multiline PEM/OpenSSH private-key contents | Unset; required when SSH agent authentication is unavailable | No — environment only | Supply SSH key material for a short-lived owner-only file. |
+| `DEPLOY_SCYLLA_VMS_SSH_PRIVATE_KEY_PASSPHRASE` | Opaque passphrase | Unset; optional only for an encrypted supplied SSH key | No — environment only | Unlock supplied SSH material through a protected helper, never argv. |
+| `SSH_AUTH_SOCK` | Absolute Unix socket path | Unset; optional alternative to supplied SSH key contents | No — environment only | Use an already authenticated SSH agent. |
+| `DEPLOY_SCYLLA_VMS_ANSIBLE_VAULT_PASSWORD` | Opaque password | Unset; required only when pinned Ansible content uses Vault | No — environment only | Materialize a short-lived Vault password source. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_REPOSITORY_USERNAME` | Opaque UTF-8 username | Unset; required with repository password only for an authenticated repository | No — environment only | Authenticate to a configured Scylla package repository. |
+| `DEPLOY_SCYLLA_VMS_SCYLLA_REPOSITORY_PASSWORD` | Opaque password/token | Unset; required with repository username only for an authenticated repository | No — environment only | Authenticate to a configured Scylla package repository. |
+| `DEPLOY_SCYLLA_VMS_MANAGER_AUTH_TOKEN` | Opaque token | Unset; required only by a selected Manager integration schema | No — environment only | Authenticate protected Manager registration/API actions. |
+| `DEPLOY_SCYLLA_VMS_MONITORING_AUTH_TOKEN` | Opaque token | Unset; required only by a selected protected monitoring integration | No — environment only | Authenticate protected monitoring API/target actions. |
+
+API-key inputs follow the [OCI Terraform provider environment contract](https://docs.oracle.com/en-us/iaas/Content/dev/terraform/configuring.htm).
+Instance-principal mode uses OCI instance metadata and therefore requires none of
+the API-key variables. Resource-principal names and accepted token/reference
+forms must be pinned to the selected OCI SDK/provider versions before release;
+the four listed names are passed only in that mode. A user-supplied OCI config
+profile or persistent private-key-path variable is not supported.
+
+Direct SSH key contents and `SSH_AUTH_SOCK` are mutually exclusive. Encrypted key
+support is accepted only after the protected passphrase helper is implemented
+and tested; otherwise fail with guidance to use an SSH agent. Secret values are
+never displayed, persisted, placed in Terraform inputs/state/plan, inventory,
+manifests, logs, exceptions, journals, or command arguments. Paths to agent
+sockets or temporary secret files are also redacted. Any downstream-required
+credential file is created owner-only below a protected runtime directory,
+passed only to the intended process, and reliably removed.
+
+#### Internal subprocess environment
+
+These are set by Python after validation. They are environment variables in
+child processes but are not user configuration and cannot be overridden:
+
+| Variable | Type / accepted syntax | Default or required behavior | CLI override | Purpose |
+| --- | --- | --- | --- | --- |
+| `TF_DATA_DIR` | Absolute canonical cluster Terraform data path | Always set to `<cluster-root>/terraform/.terraform` | No — application-controlled | Keep Terraform working data outside the source tree. |
+| `TF_IN_AUTOMATION` | Literal `1` | Always set | No — application-controlled | Request automation-oriented Terraform output. |
+| `TF_INPUT` | Literal `0` | Always set | No — application-controlled | Prevent unreviewed interactive Terraform input. |
+| `OCI_AUTH` | Provider-supported auth enum derived from resolved mode | Always set by the OCI adapter | No — application-controlled | Bind Terraform to the selected auth flow. |
+| `ANSIBLE_CONFIG` | Absolute generated protected config path | Always set for Ansible invocations | No — application-controlled | Prevent discovery of ambient Ansible configuration. |
+| `ANSIBLE_HOST_KEY_CHECKING` | Literal `True` | Always set | No — application-controlled | Enforce SSH host-key verification. |
+| `ANSIBLE_VAULT_PASSWORD_FILE` | Absolute short-lived owner-only path | Set only when the Vault password input is required | No — application-controlled | Bridge the environment secret to Ansible without argv exposure. |
+
+The process runner starts from an empty/minimal environment, adds a validated
+platform executable locale baseline, the applicable allowlisted registry
+values, and these application-controlled values. It never forwards the complete
+Python parent environment. Terraform argument-injection/input-variable families,
+ambient CLI configuration, workspace selectors, and proxy settings; Ansible
+config, callback, inventory, role/plugin path, extra-var, and SSH-argument
+settings; and unlisted OCI SDK/provider settings are stripped unless a later
+review adds an exact registry entry and threat-model tests. Users cannot override
+state/data/backend paths, automation/input modes, inventory, host-key checking,
+playbooks, callbacks/plugins, or command arguments through environment.
+
+#### Intentionally CLI-only
+
+No environment variable exists for `--json`, `--non-interactive`, `--dry-run`,
+`--plan`, `--yes`, `--allow-destructive`, stable node/host selectors, live/dead
+mode, per-operation scope/component/target lists, saved-plan or resume identity,
+volume disposition overrides, wipe/reuse/recreate/relabel consent, exact
+device/host/cluster confirmations, or arbitrary Terraform/Ansible/SSH behavior.
+Repeatable topology/network maps and operation selection lists also remain
+CLI/config-only. Non-interactive execution fails when the required explicit CLI
+acknowledgement is absent; environment values can never authorize destructive
+or topology-changing behavior.
 
 ## 4. Architecture and module layout
 
@@ -973,13 +1157,12 @@ identity assertion and must be explicitly supported by that operation, otherwise
 reconciliation refuses it. Environment values never silently retopologize,
 replace, relabel, wipe, or destroy an established cluster.
 
-All environment-capable booleans use explicit enum strings such as
-`enabled`/`disabled`; action flags are CLI-only. Environment values are parsed
-with the same type/range/normalization rules as CLI values. An unset variable is
-absent, not an empty string; empty strings are invalid. Repeatable mappings are
-CLI/config-only unless a deterministic environment encoding is explicitly
-listed. Secret credentials, SSH private keys, passwords, CHAP values, and tokens
-remain environment-only inputs handled by the secrets contract and have no CLI
+The normative registry defines shared parsing, defaults, CLI overrides, and
+secret/internal process handling. Current environment-capable switches use
+explicit enums such as `enabled`/`disabled`; action flags are CLI-only. Unset is
+distinct from empty, and repeatable mappings remain CLI/config-only unless a
+future registry entry defines strict JSON. Credentials, SSH private keys,
+passwords, CHAP values, and tokens remain environment-only inputs with no CLI
 flags or non-secret config keys.
 
 #### Core flags (`core`)
@@ -2280,15 +2463,29 @@ journal the phase, and return a conventional nonzero cancellation status.
 - argparse subcommands, canonical global-before-subcommand syntax, generated
   help, and exact per-operation flag/group allowlists, including rejection of
   every unrelated flag;
+- generated environment-registry/CLI consistency: every CLI Environment entry
+  resolves to exactly one same-type/default registry field, every `Yes` override
+  names a defined compatible flag, and unknown `DEPLOY_SCYLLA_VMS_*` names fail
+  as likely typos;
 - CLI/environment/config/default/Persisted precedence, empty-versus-unset,
   required-without-default, explicit numeric zero, finite range checks, and
-  strict environment enum/boolean parsing;
+  strict UTF-8 string, enum/boolean, base-10 integer, finite-decimal duration,
+  `~`-only path, and JSON array/object parsing, including malformed/empty
+  values and CLI-over-environment precedence;
 - repeatable `ZONE=VALUE`, `ROLE=VALUE`, and `NODE_ID=VALUE` parsing,
   canonicalization, duplicate detection, mutual exclusions, exactly-one-family
   constraints, required-together fields, and forbidden combinations;
 - secret redaction and absence/rejection of credential, private-key, password,
   token, CHAP-value, arbitrary extra-var/playbook/Terraform-argument, and generic
   force CLI inputs;
+- mode-specific secret requirements/redaction, OCI principal allowlisting,
+  short-lived secret-file cleanup, and proof that no secret or protected path
+  reaches argv, state, plan, inventory, manifest, journal, exception, or logs;
+- child-process environment construction from an empty/minimal baseline,
+  allowlisted per-tool pass-through, fixed internal Terraform/Ansible controls,
+  and rejection/stripping of ambient argument, backend/data-directory,
+  workspace, config, inventory, callback/plugin, SSH-option, and proxy
+  injection;
 - proof that `--yes`, destructive target IDs/modes, exact confirmations, wipe/
   recreate/relabel consent, saved-plan identity, and resume identity cannot come
   from environment or config;
@@ -2356,7 +2553,10 @@ change a real ScyllaDB cluster.
 - Parser-registry contract tests snapshot each subcommand's help/JSON schema and
   assert its exact common groups, operation flags, environment names, defaults,
   requiredness, and deprecation-free spelling. Documentation examples parse
-  through the same registry.
+  through the same registry. A generated documentation contract also verifies
+  registry table columns/category membership, unique environment names,
+  CLI-override existence/type/default compatibility, environment-only secret
+  status, and the intentionally CLI-only denial set.
 - Terraform `fmt`, `validate`, and plan against mocked/test modules where
   practical.
 - Ansible syntax checks, lint, check mode, and idempotence in disposable local
@@ -2394,8 +2594,10 @@ implementation and packaging files exist.
   zones, manager/monitor separation, explicit and provider-default
   datacenter/rack mappings, role-specific storage defaults, all three Scylla
   storage modes, and configuration precedence. Every subcommand accepts only
-  its documented groups/flags, every environment value maps to one documented
-  non-secret field, and destructive acknowledgements have no env/config path.
+  its documented groups/flags; the generated environment contract proves every
+  supported non-secret and environment-only secret/internal variable is
+  discoverable, uniquely typed, defaulted, and classified; and destructive
+  acknowledgements have no env/config path.
 
 ### Phase 1 — safe CLI and state foundation
 
@@ -2483,7 +2685,8 @@ implementation and packaging files exist.
   policy.
 - Remote-backend requirements, credential model, and migration timing; local
   state remains the initial canonical backend until that work is approved.
-- Exact approved OCI auth methods and environment variable names.
+- Provider-version validation of the documented OCI API-key and resource-
+  principal environment contracts, including supported token/reference forms.
 - Whether configuration files are needed in v1; if so, their non-secret schema.
 - Distribution model (single script checkout versus installable Python package).
 
