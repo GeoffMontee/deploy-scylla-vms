@@ -26,7 +26,8 @@ The design in `PLAN.md` covers:
 
 - an extensible operation model with `deploy`, `add-node`, `replace-node`,
   `destroy-node`, `destroy`, `scale-out`, `scale-in`, `redeploy`,
-  `refresh-monitoring`, `upgrade-os`, and `check-jump-hosts`;
+  `refresh-monitoring`, `upgrade-os`, `check-jump-hosts`, and a read-only,
+  provenance-aware `show`;
 - OCI as the only initially accepted cloud provider, with provider boundaries
   designed to permit future AWS or GCP implementations;
 - explicit cluster names, zones, per-zone ScyllaDB node counts, zero or more

@@ -37,6 +37,7 @@
   - [Refresh-monitoring](#refresh-monitoring)
   - [Upgrade-os](#upgrade-os)
   - [Check-jump-hosts](#check-jump-hosts)
+  - [Show](#show)
 - [10. Command execution boundaries](#10-command-execution-boundaries)
 - [11. Safety, security, and lifecycle policy](#11-safety-security-and-lifecycle-policy)
 - [12. Resumability, idempotency, and drift](#12-resumability-idempotency-and-drift)
@@ -127,7 +128,7 @@ handler, required capabilities, mutability class, validation rules, and phases.
 This allows new operations to be registered without changing unrelated command
 code.
 
-Required initial operations:
+The 12 required initial operations are:
 
 | Operation | Planned intent |
 | --- | --- |
@@ -142,6 +143,7 @@ Required initial operations:
 | `refresh-monitoring` | Regenerate monitoring targets/configuration and apply/validate the monitoring stack. |
 | `upgrade-os` | Apply an approved rolling OS upgrade/reboot workflow with health gates. |
 | `check-jump-hosts` | Validate jump-host reachability, SSH forwarding, host identity, and target connectivity without mutation. |
+| `show` | Render a provenance-aware, redacted cluster report from canonical persisted/local state with optional bounded read-only live checks. |
 
 Future operations may include ScyllaDB version upgrades, Manager upgrades,
 backup/restore validation, certificate rotation, and explicit drift repair. They
@@ -405,6 +407,7 @@ metadata and is redacted at lower log levels.
 | `DEPLOY_SCYLLA_VMS_REBOOT_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `1800` | Yes — `--reboot-timeout-seconds` | Bound reboot/reconnect validation. |
 | `DEPLOY_SCYLLA_VMS_SSH_CONNECT_TIMEOUT_SECONDS` | Positive finite decimal seconds | `10` | Yes — `--connect-timeout-seconds` | Bound each jump-host SSH attempt. |
 | `DEPLOY_SCYLLA_VMS_JUMP_CHECK_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `300` | Yes — `--check-timeout-seconds` | Bound the complete jump-host check. |
+| `DEPLOY_SCYLLA_VMS_SHOW_LIVE_TIMEOUT_SECONDS` | Positive base-10 integer seconds | `300` | Yes — `--live-timeout-seconds` | Bound all explicitly requested `show` live checks. |
 
 #### Credentials and secrets
 
@@ -485,7 +488,9 @@ device/host/cluster confirmations, or arbitrary Terraform/Ansible/SSH behavior.
 Repeatable topology/network maps and operation selection lists also remain
 CLI/config-only. Non-interactive execution fails when the required explicit CLI
 acknowledgement is absent; environment values can never authorize destructive
-or topology-changing behavior.
+or topology-changing behavior. `show` section/node/live/failure filters and its
+exact-address disclosure flag are likewise CLI-only so ambient environment
+cannot broaden a report or disclose addresses.
 
 ## 4. Architecture and module layout
 
@@ -505,6 +510,7 @@ scylla_vms/
     destroy.py
     scale.py
     maintenance.py
+    show.py
   providers/
     base.py                   # CloudProvider interface
     oci.py                    # OCI validation and Terraform inputs
@@ -566,6 +572,9 @@ library) for:
 - `OperationRecord`: operation ID, requested target, preconditions, completed
   phases, plan/manifest/prepared-storage digests, wipe/fallback checkpoints,
   timestamps, and non-secret outcomes.
+- `ShowReport`: versioned deterministic projection of desired, Terraform-
+  observed, and optionally live-validated cluster facts, with per-field source,
+  freshness, redaction/exposure, and unknown/not-performed status.
 
 Persist a generated random cluster UUID at initial creation. Validate
 `--cluster-name` rather than silently sanitizing it: the initial grammar is
@@ -1139,8 +1148,9 @@ Every operation uses the common phase model: parse/resolve, lock, load metadata,
 reconcile, validate preconditions, plan, confirm, execute, verify, journal, and
 unlock. Read-only or no-change operations explicitly mark inapplicable phases
 instead of pretending to plan/apply or seek unnecessary confirmation. A phase
-records durable non-secret completion evidence so an interrupted operation can
-safely resume after revalidation.
+that mutates state records durable non-secret completion evidence so an
+interrupted operation can safely resume after revalidation; read-only operations
+need not create a journal.
 
 ### Common CLI flag groups
 
@@ -2379,6 +2389,135 @@ firewall repair, and confirmation/mutation flags are not accepted. `--json` and
    metadata/result in the operation journal. Because no mutation occurs,
    rerunning is the recovery path; an interrupted check has no rollback phase.
 
+### Show
+
+**CLI flags**
+
+Applies `core`. It conditionally accepts `oci-context`: `--oci-region` and
+`--oci-compartment-id` are persisted-identity assertions when supplied, while
+`--oci-auth-mode` and its environment-only credential set are required only when
+`--live provider` or `--live all` performs provider API reads. Default execution
+does not require cloud credentials. It rejects `mutate`, `destructive`,
+`network`, `topology`, `shapes`, both storage groups, `--dry-run`, `--plan`,
+`--yes`, and every confirmation flag because it cannot alter infrastructure,
+state, inventory, or cluster configuration.
+
+| Flag | Type / accepted values | Default or required behavior | Environment | Purpose |
+| --- | --- | --- | --- | --- |
+| `--section` | Repeatable enum: `summary`, `topology`, `hosts`, `storage`, `services`, `freshness`, `operations`, `drift`, `health`, or `all` | Empty list means `all` | No | Select report sections without changing source validation. |
+| `--node-id` | Repeatable existing stable logical host ID | Empty list means all persisted hosts | No | Filter host-scoped rows after identity reconciliation. |
+| `--live` | Repeatable enum: `provider`, `connectivity`, `health`, or `all` | Empty list; perform no provider, SSH, Ansible, or Scylla live checks | No | Request bounded read-only validation sources explicitly. |
+| `--include-addresses` | Sensitive-output action boolean | `false` | No | Include exact private/public addresses and route endpoints in stdout; never relax any other redaction. |
+| `--fail-on` | Repeatable enum: `stale`, `drift`, `conflict`, `unhealthy`, `unknown`, or `none` | `conflict` | No | Render the report, then map selected findings to stable nonzero exit codes. |
+| `--live-timeout-seconds` | Positive integer seconds | `300` | `DEPLOY_SCYLLA_VMS_SHOW_LIVE_TIMEOUT_SECONDS` | Bound the aggregate explicitly requested live-check phase. |
+
+`all` cannot be combined with another value in the same repeatable option.
+`--fail-on none` cannot be combined with another failure class and does not
+suppress malformed CLI, unsafe path/permission, missing cluster identity,
+invalid Terraform/output schemas, lock failures, or failure to execute an
+explicitly requested live check. A selected section never suppresses validation
+of the underlying cluster identity. Unknown `--node-id` values are CLI errors;
+filters never select by list index, IP address, or provider ID.
+
+Human-readable output is the default. The `core` `--json` flag emits the stable
+versioned `deploy-scylla-vms.show/v1` object with deterministic key/host order,
+the selected sections, report generation time, source digests/timestamps, and
+finding/exit-status fields. YAML is not supported. Exact addresses are omitted
+from both formats unless `--include-addresses` is present. That flag classifies
+the invocation as **read-only with sensitive output**, remains CLI-only, writes
+addresses only to stdout, and never includes them in ordinary logs or operation
+journals; operators are responsible for protecting redirected stdout.
+
+**Required Ansible playbooks (execution order)**
+
+- **Default.** No Ansible playbook runs. Persisted metadata and canonical local
+  Terraform state/output are sufficient for the default report.
+- **1.** When `--live connectivity`, `--live health`, or `--live all` is
+  requested, run `ansible/playbooks/inventory-preflight.yml` read-only against
+  an in-memory validated inventory projection.
+- **2.** For `connectivity` or `all`, run
+  `ansible/playbooks/connectivity-check.yml` with explicit stable-ID limits and
+  the remaining aggregate timeout.
+- **3.** For `health` or `all`, run
+  `ansible/playbooks/scylla-health.yml` against the filtered Scylla hosts and
+  required cluster peers, then `ansible/playbooks/evidence-collect.yml` with its
+  health-summary action and explicit limits for relevant Manager, monitoring,
+  and jump-host service status. A provider-only live check uses no Ansible
+  playbook.
+
+These playbooks collect facts only and must report partial/unreachable results;
+no configuration, package, storage, topology, monitoring-target, Manager-task,
+or operation-journal-mutating playbook is permitted.
+
+**Operation procedure:**
+
+1. Parse the global-before-subcommand CLI, resolve the validated cluster name
+   and canonical cluster root, classify exact-address disclosure separately,
+   and reject every mutation, arbitrary target, or unsupported format option.
+2. Acquire a shared/read lock when supported, otherwise the normal cluster lock,
+   within the requested lock timeout. Validate that the state root and cluster
+   root are canonical, owner-controlled, non-symlinked, and permission-safe;
+   return the existing lock or unsafe-path exit rather than reading around an
+   active incompatible operation. Follow the plan's
+   [Terraform state security guidance](https://developer.hashicorp.com/terraform/language/state/sensitive-data)
+   even though the rendered projection is redacted.
+3. Load persisted cluster metadata, desired topology, stable host identities,
+   storage policies/manifests, prepared-storage records, canonical generated
+   inventory metadata, operation journals, and the last successful operation/
+   checkpoint. Missing cluster identity or structurally invalid ownership/schema
+   is fatal; missing optional evidence becomes explicitly unavailable only when
+   safe to report.
+4. By default, execute only `terraform output -json` against the canonical local
+   backend/state and existing `TF_DATA_DIR`; do not run `init`, refresh, plan,
+   apply, import, state mutation, or save a refresh-only plan. Strictly validate
+   the versioned output schema and read the existing state snapshot without
+   rewriting canonical state or inventory. Use Terraform's
+   [`output -json` contract](https://developer.hashicorp.com/terraform/cli/commands/output),
+   [machine-readable JSON format](https://developer.hashicorp.com/terraform/internals/json-format),
+   and [state model](https://developer.hashicorp.com/terraform/language/state).
+5. Reconcile in memory. For each field retain separate desired/persisted,
+   Terraform-observed, and live-validated values plus source digest/time. Mark
+   cached evidence as `fresh`, `stale`, `unknown`, `unavailable`, or
+   `not-performed`; a check omitted by the operator is `not-performed`, never
+   healthy, and old inventory/provider/health data is never presented as
+   current. Report identity, membership, topology, storage, inventory, manifest,
+   and operation-checkpoint conflicts without choosing a winner or rewriting
+   files.
+6. If requested, perform only bounded reads after local reconciliation:
+   `provider` queries the managed resource identities through provider APIs;
+   `connectivity` validates the inventory-derived SSH/bastion routes; and
+   `health` validates Scylla membership/datacenter/rack/ring and relevant
+   Manager/monitor status. Use current
+   [OCI provider data/resource contracts](https://registry.terraform.io/providers/oracle/oci/latest/docs),
+   the [Ansible inventory model](https://docs.ansible.com/ansible/latest/inventory_guide/index.html),
+   and [Ansible playbook/check-mode limits](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_checkmode.html).
+   Never refresh Terraform state as a side effect. Preserve successful facts and
+   report each timeout, unreachable host, authentication failure, or unsupported
+   check independently instead of discarding the partial report.
+7. Apply section and stable-ID filters only after reconciliation, then project
+   cluster identity, provider/region, desired/observed topology, roles/zones,
+   Scylla datacenter/rack, provider IDs, shapes, storage backend/capacity/
+   ephemeral status, service/jump-host summaries, freshness, last successful
+   operation/checkpoint, drift/conflicts, and health when known. By default,
+   replace exact IPs/endpoints with address-present, private/public exposure,
+   and stable bastion-route summaries. With `--include-addresses`, label each
+   exact value as private, public, or route endpoint while still excluding
+   secrets, credential paths/material, raw environment values, sensitive
+   Terraform variables, command lines, and unredacted provider/Ansible payloads.
+8. Render deterministic human output or the versioned JSON schema to stdout.
+   Emit the report before applying `--fail-on`: freshness/drift/conflict findings
+   map to exit `5`, selected unhealthy findings to `8`, malformed input to `2`,
+   lock failure to `4`, and inability to perform an explicitly requested auth/
+   provider/connectivity check to `3`. Unknown/stale/not-performed facts render
+   successfully with exit `0` unless selected by `--fail-on`; structural
+   identity/schema/permission failures remain nonzero regardless of that flag.
+9. Release the lock without changing desired metadata, Terraform state,
+   inventory, manifests, host trust, or the last-successful checkpoint. Default
+   `show` creates no operation journal. Existing protected diagnostic logging
+   may append only a sanitized invocation/result summary; it never records exact
+   addresses, secrets, raw errors, or report payloads, and failure to write that
+   optional diagnostic cannot trigger cluster mutation.
+
 ## 10. Command execution boundaries
 
 Terraform, Ansible, SSH, OCI CLI (if used), and supporting tools run through one
@@ -2420,6 +2559,10 @@ JSON is schema-validated before use.
 - Logs are structured, timestamped, operation-scoped, redacted, and written with
   restrictive permissions. Human and `--json` output have stable event/error
   fields.
+- `show` omits exact addresses by default and labels every included address as
+  private, public, or route exposure only after explicit CLI disclosure; neither
+  output mode may weaken secret, raw-error, environment, command, or sensitive-
+  state redaction.
 - Never place secrets in Terraform state where a non-secret reference can avoid
   it. Mark unavoidable sensitive values and protect the entire state, not just
   outputs.
@@ -2483,8 +2626,12 @@ journal the phase, and return a conventional nonzero cancellation status.
 ### Unit tests
 
 - argparse subcommands, canonical global-before-subcommand syntax, generated
-  help, and exact per-operation flag/group allowlists, including rejection of
-  every unrelated flag;
+  help for all 12 operations, and exact per-operation flag/group allowlists,
+  including rejection of every unrelated flag;
+- `show` registry dispatch as read-only by default and read-only/sensitive-output
+  only with `--include-addresses`, including section/node/live/fail-on parsing,
+  mutual exclusions, deterministic filters, and rejection of every mutating
+  flag;
 - generated environment-registry/CLI consistency: every CLI Environment entry
   resolves to exactly one same-type/default registry field, every `Yes` override
   names a defined compatible flag, and unknown `DEPLOY_SCYLLA_VMS_*` names fail
@@ -2537,6 +2684,17 @@ journal the phase, and return a conventional nonzero cancellation status.
   encryption/performance/layout/ephemeral/retention field;
 - inventory schema validation, topology hostvar/group propagation, and
   datacenter/rack/storage-manifest conflict/drift classification;
+- deterministic human and `deploy-scylla-vms.show/v1` JSON report projections,
+  field-level desired/Terraform/live provenance, fresh/stale/unknown/unavailable/
+  not-performed labels, omitted section/node behavior, and full redaction of
+  secrets, raw environments/errors/commands, and sensitive Terraform inputs;
+- `show` exact-address omission by default, private/public/route exposure labels,
+  CLI-only disclosure, stdout-only address handling, and proof that addresses
+  never enter logs/journals;
+- read-only `show` canonical-root/ownership and shared-lock handling, local
+  `terraform output -json` schema consumption without init/refresh/plan/state or
+  inventory writes, provider/health/connectivity live-check timeouts and partial
+  failures, and finding-to-exit-code behavior;
 - deterministic provider-to-OS device correlation under changed enumeration
   order, absent/duplicate serials, root-on-partition/mapper/RAID ancestry,
   unexpected signatures, mounted/open holders, stale ownership markers, and
@@ -2571,7 +2729,9 @@ change a real ScyllaDB cluster.
 - A catalog contract test parses/loads the declared operation mapping and fails
   on an undefined/unmapped playbook, unsafe order, missing explicit inventory or
   limit, unapproved extra variable, stale inventory digest, or a mutating
-  playbook selected for read-only `check-jump-hosts`.
+  playbook selected for read-only `check-jump-hosts`/`show`. It verifies that
+  default `show` maps to no playbook and each explicit live-check combination
+  maps only to the documented preflight/connectivity/health/evidence sequence.
 - Parser-registry contract tests snapshot each subcommand's help/JSON schema and
   assert its exact common groups, operation flags, environment names, defaults,
   requiredness, and deprecation-free spelling. Documentation examples parse
@@ -2579,6 +2739,9 @@ change a real ScyllaDB cluster.
   registry table columns/category membership, unique environment names,
   CLI-override existence/type/default compatibility, environment-only secret
   status, and the intentionally CLI-only denial set.
+- Golden `show` reports cover healthy, stale, partial, unknown, conflicting, and
+  redacted/address-disclosed fixtures; human and JSON views have deterministic
+  host/section ordering and agree on findings and stable exit status.
 - Terraform `fmt`, `validate`, and plan against mocked/test modules where
   practical.
 - Ansible syntax checks, lint, check mode, and idempotence in disposable local
@@ -2594,9 +2757,11 @@ change a real ScyllaDB cluster.
 
 ### End-to-end scenarios
 
-In an approved ephemeral environment: deploy; no-op rerun; scale out; refresh
-monitoring; replace a failed node; scale in; rolling OS upgrade; interruption and
-resume; drift refusal; and full destroy. Cover both a Block Volume path and,
+In an approved ephemeral environment: deploy; default and explicit-live `show`;
+no-op rerun; scale out; refresh monitoring; replace a failed node; scale in;
+rolling OS upgrade; interruption and resume; drift refusal; and full destroy.
+Prove both `show` modes leave state, inventory, cluster configuration, and cloud
+resources byte/identity unchanged. Cover both a Block Volume path and,
 only on a verified shape that provides it, local-NVMe loss/replacement/rebuild.
 Verify retained Block Volumes survive deletion as declared and are not attached
 to a different logical node. Capture topology and health evidence at each stage.
@@ -2615,19 +2780,20 @@ implementation and packaging files exist.
 - Acceptance: fixture-backed examples cover zero/multiple jump hosts, uneven
   zones, manager/monitor separation, explicit and provider-default
   datacenter/rack mappings, role-specific storage defaults, all three Scylla
-  storage modes, and configuration precedence. Every subcommand accepts only
-  its documented groups/flags; the generated environment contract proves every
-  supported non-secret and environment-only secret/internal variable is
-  discoverable, uniquely typed, defaulted, and classified; and destructive
-  acknowledgements have no env/config path.
+  storage modes, and configuration precedence. Each of the 12 subcommands
+  accepts only its documented groups/flags; the generated environment contract
+  proves every supported non-secret and environment-only secret/internal
+  variable is discoverable, uniquely typed, defaulted, and classified; and
+  destructive acknowledgements have no env/config path.
 
 ### Phase 1 — safe CLI and state foundation
 
 - Implement parser, models, provider registry, path validation, locking,
-  redaction, process runner, journals, and read-only commands.
+  redaction, process runner, journals, `show`, and other read-only commands.
 - Acceptance: unit tests verify no secret flags, canonical external paths,
-  traversal/symlink refusal, concurrency refusal, deterministic identity, and
-  stable errors.
+  traversal/symlink refusal, concurrency refusal, deterministic identity, stable
+  errors, provenance-aware human/JSON `show` output, address redaction, and no
+  state/inventory/provider/cluster writes.
 
 ### Phase 2 — OCI Terraform provisioning
 
