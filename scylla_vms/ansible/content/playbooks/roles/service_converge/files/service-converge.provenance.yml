@@ -1,0 +1,71 @@
+---
+schema_version: deploy-scylla-vms.service-converge-provenance/v1
+artifact: service-converge-units
+retrieved_at: "2026-09-18"
+authentication:
+  immutable_plan_owned_units:
+    systemd-timesyncd.service:
+      desired_enabled: enabled
+      desired_active: active
+      start_allowed: true
+      source: implemented base-os Ubuntu 24.04 baseline
+    scylla-server.service:
+      desired_enabled: masked
+      desired_active: inactive
+      start_allowed: false
+      source: scylla-install and scylla-configure leave the unit masked
+    scylla-manager.service:
+      desired_enabled: masked
+      desired_active: inactive
+      start_allowed: false
+      source: manager-server install-only slice
+    scylla-manager-agent.service:
+      desired_enabled: disabled
+      desired_active: inactive
+      start_allowed: false
+      source: manager-agent install-only slice
+    scylla-node-exporter.service:
+      desired_enabled: disabled
+      desired_active: inactive
+      start_allowed: false
+      source: monitoring-agent install-only slice
+  official_notes:
+    - >-
+      PLAN base-os enables and starts only systemd-timesyncd after generic
+      APT prerequisites. That is the only reviewed generic start.
+    - >-
+      PLAN names systemd unmask/start of scylla-server as the irreversible
+      scylla-bootstrap boundary. service-converge never crosses it.
+    - >-
+      Manager 3.12 agent and server slices leave scylla-manager-agent
+      disabled/inactive and scylla-manager masked/inactive. No reviewed
+      bind, token, backend, or start path exists.
+    - >-
+      monitoring-agent leaves scylla-node-exporter disabled/inactive because
+      starting it would bind port 9100. monitoring-stack and
+      monitoring-targets remain not-started.
+    - >-
+      jump-host-configure reloads Ubuntu ssh after a validated drop-in
+      change. service-converge does not restart ssh.
+    - >-
+      PLAN service-converge is later service-scope reconcile/restart, but
+      it does not define a safe start allowlist for already-bootstrapped
+      Scylla, Manager, exporters, or the monitoring stack.
+verification:
+  - >-
+    This slice validates Ubuntu 24.04, current base-os, and
+    role-appropriate current install evidence only.
+  - >-
+    The host module may enable/start or restart only
+    systemd-timesyncd.service. restart_policy never authorizes another
+    unit.
+  - >-
+    Forbidden units succeed only when already-correct masked or
+    disabled/inactive states match. Active or unmasked states fail
+    closed without stop, start, unmask, or restart.
+  - >-
+    monitoring-stack and monitoring-targets have an empty unit set and
+    report stack, docker, container, and exporter starts as
+    not-performed.
+  - Refuse package install, config rewrite, firewall, SSH, secrets, and
+    Terraform.

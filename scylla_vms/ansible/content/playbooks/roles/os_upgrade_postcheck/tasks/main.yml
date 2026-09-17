@@ -1,0 +1,158 @@
+---
+- name: Collect bounded OS-upgrade postcheck evidence
+  block:
+    - name: Inspect exact OS, package, kernel, reboot, and service state
+      os_upgrade_postcheck:
+        payload: "{{ deploy_scylla_vms_os_upgrade_postcheck }}"
+        timeout_seconds: 15
+      register: os_upgrade_postcheck_inspect
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Retain strict read-only OS-upgrade postcheck result
+      ansible.builtin.set_fact:
+        os_upgrade_postcheck_result:
+          "{{ os_upgrade_postcheck_inspect.result }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed OS-upgrade postcheck
+      ansible.builtin.set_fact:
+        os_upgrade_postcheck_result:
+          schema_version: deploy-scylla-vms.ansible-os-upgrade-postcheck/v1
+          logical_id:
+            "{{ deploy_scylla_vms_os_upgrade_postcheck.logical_id }}"
+          role: "{{ deploy_scylla_vms_os_upgrade_postcheck.role }}"
+          status: failed
+          source_mode:
+            "{{ deploy_scylla_vms_os_upgrade_postcheck.source_mode }}"
+          source_schema_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.source_schema_version
+            }}
+          source_status:
+            "{{ deploy_scylla_vms_os_upgrade_postcheck.source_status }}"
+          source_result_digest: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.source_result_digest
+            }}
+          source_upgrade_performed: false
+          transition_classification: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .transition_classification
+            }}
+          transition_comparison: >-
+            {{
+              'matched'
+              if (
+                deploy_scylla_vms_os_upgrade_postcheck
+                .current_operating_system ==
+                deploy_scylla_vms_os_upgrade_postcheck
+                .target_operating_system
+                and deploy_scylla_vms_os_upgrade_postcheck
+                .current_operating_system_version ==
+                deploy_scylla_vms_os_upgrade_postcheck
+                .target_operating_system_version
+                and deploy_scylla_vms_os_upgrade_postcheck.architecture ==
+                deploy_scylla_vms_os_upgrade_postcheck.target_architecture
+              )
+              else 'mismatched'
+            }}
+          previous_operating_system: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .previous_operating_system
+            }}
+          previous_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .previous_operating_system_version
+            }}
+          previous_architecture: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.previous_architecture
+            }}
+          target_operating_system: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.target_operating_system
+            }}
+          target_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .target_operating_system_version
+            }}
+          target_architecture: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.target_architecture
+            }}
+          current_operating_system: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.current_operating_system
+            }}
+          current_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .current_operating_system_version
+            }}
+          current_architecture: >-
+            {{ deploy_scylla_vms_os_upgrade_postcheck.architecture }}
+          current_provider_id_digest: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .current_provider_id_digest
+            }}
+          current_kernel_release_digest: null
+          current_package_state_digest: null
+          current_service_state_digest: null
+          observation_generation: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck
+              .observation_generation
+            }}
+          inventory_generation: >-
+            {{
+              deploy_scylla_vms_os_upgrade_postcheck.inventory_generation
+            }}
+          trust_generation: >-
+            {{ deploy_scylla_vms_os_upgrade_postcheck.trust_generation }}
+          gates:
+            - {name: architecture, status: unknown}
+            - {name: base-os, status: unknown}
+            - {name: broken-packages, status: unknown}
+            - {name: health, status: unknown}
+            - {name: kernel, status: unknown}
+            - {name: operating-system, status: unknown}
+            - {name: package-state, status: unknown}
+            - {name: provider-identity, status: unknown}
+            - {name: reboot-required, status: unknown}
+            - {name: role-configuration, status: unknown}
+            - {name: role-package, status: unknown}
+            - {name: route, status: unknown}
+            - {name: service-policy, status: unknown}
+            - {name: source-upgrade, status: unknown}
+            - {name: stable-identity, status: unknown}
+            - {name: storage, status: unknown}
+            - {name: transition, status: unknown}
+          verification_performed: []
+          verification_not_performed:
+            "{{ deploy_scylla_vms_os_upgrade_postcheck.verification_names }}"
+          mutation_performed: false
+          remediation_performed: false
+          automatic_remediation: false
+          not_performed:
+            "{{ deploy_scylla_vms_os_upgrade_postcheck.not_performed }}"
+          provenance:
+            "{{ deploy_scylla_vms_os_upgrade_postcheck.provenance }}"
+          blockers:
+            - execution-failed
+      changed_when: false
+      no_log: true
+      tags:
+        - verify

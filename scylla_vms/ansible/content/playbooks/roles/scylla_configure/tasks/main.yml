@@ -1,0 +1,282 @@
+---
+- name: Keep Scylla masked and inactive before configuration
+  ansible.builtin.systemd_service:
+    name: scylla-server
+    enabled: false
+    masked: true
+    state: stopped
+  register: scylla_configure_initial_service
+  tags:
+    - configure
+    - service-safety
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: apt
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Verify exact installed Scylla server package
+  ansible.builtin.assert:
+    that:
+      - "'scylla-server' in ansible_facts.packages"
+      - >-
+        ansible_facts.packages['scylla-server']
+        | map(attribute='version')
+        | unique
+        | list
+        == [deploy_scylla_vms_scylla_configure.package_version]
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Inspect existing Scylla configuration files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop:
+    - /etc/scylla/scylla.yaml
+    - /etc/scylla/cassandra-rackdc.properties
+  register: scylla_configure_existing_stats
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Require regular existing files after initial configuration
+  ansible.builtin.assert:
+    that:
+      - scylla_configure_existing_stats.results | length == 2
+      - scylla_configure_existing_stats.results[0].stat.exists
+      - scylla_configure_existing_stats.results[0].stat.isreg
+      - not scylla_configure_existing_stats.results[0].stat.islnk
+      - scylla_configure_existing_stats.results[1].stat.exists
+      - scylla_configure_existing_stats.results[1].stat.isreg
+      - not scylla_configure_existing_stats.results[1].stat.islnk
+    quiet: true
+  when: deploy_scylla_vms_scylla_configure.configuration_state == 'existing'
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Read existing immutable configuration identity
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - /etc/scylla/scylla.yaml
+    - /etc/scylla/cassandra-rackdc.properties
+  register: scylla_configure_existing_content
+  when: deploy_scylla_vms_scylla_configure.configuration_state == 'existing'
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Refuse cluster name or datacenter and rack relabeling
+  ansible.builtin.assert:
+    that:
+      - >-
+        (
+          scylla_configure_existing_content.results[0].content
+          | b64decode
+          | regex_search('(?m)^cluster_name: (.+)$', '\\1')
+          | first
+        )
+        ==
+        (deploy_scylla_vms_scylla_configure.config.cluster_name | to_json)
+      - >-
+        (
+          scylla_configure_existing_content.results[1].content
+          | b64decode
+          | regex_search('(?m)^dc=(.+)$', '\\1')
+          | first
+        )
+        ==
+        deploy_scylla_vms_scylla_configure.topology.datacenter
+      - >-
+        (
+          scylla_configure_existing_content.results[1].content
+          | b64decode
+          | regex_search('(?m)^rack=(.+)$', '\\1')
+          | first
+        )
+        ==
+        deploy_scylla_vms_scylla_configure.topology.rack
+    quiet: true
+  when: deploy_scylla_vms_scylla_configure.configuration_state == 'existing'
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Atomically render exact Scylla configuration
+  ansible.builtin.template:
+    src: scylla.yaml.j2
+    dest: /etc/scylla/scylla.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  register: scylla_configure_yaml
+  tags:
+    - configure
+
+- name: Atomically render exact rack and datacenter configuration
+  ansible.builtin.template:
+    src: cassandra-rackdc.properties.j2
+    dest: /etc/scylla/cassandra-rackdc.properties
+    owner: root
+    group: root
+    mode: "0644"
+  register: scylla_configure_rackdc
+  tags:
+    - configure
+
+- name: Verify exact rendered configuration file digests
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop:
+    - path: /etc/scylla/scylla.yaml
+      digest: >-
+        {{
+          deploy_scylla_vms_scylla_configure.file_digests['scylla.yaml']
+        }}
+    - path: /etc/scylla/cassandra-rackdc.properties
+      digest: >-
+        {{
+          deploy_scylla_vms_scylla_configure
+          .file_digests['cassandra-rackdc.properties']
+        }}
+  register: scylla_configure_rendered_stats
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Require exact rendered file identity permissions and digests
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isreg
+      - not item.stat.islnk
+      - item.stat.pw_name == 'root'
+      - item.stat.gr_name == 'root'
+      - item.stat.mode == '0644'
+      - "'sha256:' + item.stat.checksum == item.item.digest"
+    quiet: true
+  loop: "{{ scylla_configure_rendered_stats.results }}"
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Reassert masked and inactive Scylla service
+  ansible.builtin.systemd_service:
+    name: scylla-server
+    enabled: false
+    masked: true
+    state: stopped
+  register: scylla_configure_final_service
+  tags:
+    - verify
+    - service-safety
+
+- name: Inspect final Scylla service enablement
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - scylla-server.service
+  register: scylla_configure_service_enabled
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Inspect final Scylla service activity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - scylla-server.service
+  register: scylla_configure_service_active
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Refuse service activation or unmasking
+  ansible.builtin.assert:
+    that:
+      - scylla_configure_service_enabled.stdout == 'masked'
+      - scylla_configure_service_active.stdout == 'inactive'
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Emit strict normalized Scylla configure evidence
+  ansible.builtin.debug:
+    msg: >-
+      DSV_SCYLLA_CONFIGURE_B64={{
+        {
+          'schema_version':
+            'deploy-scylla-vms.ansible-scylla-configure/v1',
+          'logical_id': inventory_hostname,
+          'status': (
+            'changed'
+            if (
+              scylla_configure_initial_service.changed
+              or scylla_configure_yaml.changed
+              or scylla_configure_rackdc.changed
+              or scylla_configure_final_service.changed
+            )
+            else 'noop'
+          ),
+          'config_digest':
+            deploy_scylla_vms_scylla_configure.config_digest,
+          'topology_digest':
+            deploy_scylla_vms_scylla_configure.topology_digest,
+          'seed_digest':
+            deploy_scylla_vms_scylla_configure.seed_digest,
+          'configuration_file_digests':
+            deploy_scylla_vms_scylla_configure.file_digests,
+          'files_root_owned': true,
+          'files_mode_0644': true,
+          'installed_version':
+            deploy_scylla_vms_scylla_configure.package_version,
+          'service_masked': true,
+          'service_inactive': true,
+          'runtime_validation_performed': false,
+          'package_install_performed': false,
+          'storage_mutation_performed': false,
+          'tuning_performed': false,
+          'firewall_operation_performed': false,
+          'ssh_operation_performed': false,
+          'manager_operation_performed': false,
+          'service_started': false,
+          'bootstrap_performed': false,
+          'prerequisite_digests':
+            deploy_scylla_vms_scylla_configure.provenance,
+          'blockers': []
+        }
+        | to_json
+        | b64encode
+      }}
+  changed_when: >-
+    scylla_configure_initial_service.changed
+    or scylla_configure_yaml.changed
+    or scylla_configure_rackdc.changed
+    or scylla_configure_final_service.changed
+  no_log: false
+  tags:
+    - always

@@ -1,0 +1,8 @@
+---
+- name: Reload sshd after validated hardening
+  ansible.builtin.systemd_service:
+    name: ssh
+    state: reloaded
+  listen: Reload sshd after validated hardening
+  tags:
+    - reload

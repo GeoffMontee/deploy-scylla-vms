@@ -1,0 +1,56 @@
+---
+schema_version: >-
+  deploy-scylla-vms.ansible-manager-backend-preflight-provenance/v1
+retrieved_at: "2026-09-23"
+selection:
+  backend_mode: local-one-node
+  target_role: manager
+  scylla_release: "2026.2"
+  contact_scope: loopback-only
+  cql_port: 9042
+sources:
+  - url: >-
+      https://manager.docs.scylladb.com/stable/install-scylla-manager.html
+    conclusions:
+      - The recommended Manager backend is a local one-node ScyllaDB instance.
+      - The backend and Manager share the Manager VM.
+      - >-
+        scyllamgr_setup can separately skip local Scylla setup, Manager service
+        enablement, and update checks.
+  - url: >-
+      https://manager.docs.scylladb.com/stable/config/scylla-manager-config.html
+    conclusions:
+      - The documented default backend host is loopback.
+      - The default CQL port is 9042.
+      - >-
+        Manager may create its keyspace at startup when it does not already
+        exist.
+      - >-
+        Manual keyspace replication is recommended for non-default backend
+        deployments.
+  - url: >-
+      https://github.com/scylladb/scylla-manager/blob/v3.12.0/dist/etc/scylla-manager.yaml
+    conclusions:
+      - The immutable v3.12.0 sample documents loopback and CQL port 9042.
+      - It documents automatic keyspace creation and manual replication advice.
+  - url: >-
+      https://github.com/scylladb/scylla-manager/blob/v3.12.0/dist/scripts/scyllamgr_setup
+    conclusions:
+      - >-
+        The immutable v3.12.0 setup script separates local Scylla setup and
+        Manager service enablement flags.
+      - Setup performs mutation and is outside this preflight.
+decisions:
+  - The managed Scylla data cluster is forbidden as the Manager backend.
+  - No CQL network ingress is permitted for the local backend.
+  - Local backend contact is loopback-only.
+  - Loopback v1 uses no backend credentials or backend TLS secrets.
+  - Future Manager agent tokens remain environment-only protected inputs.
+  - Manager must remain masked and inactive during this preflight.
+  - >-
+    Local Scylla package installation, storage selection, tuning,
+    configuration, setup, schema creation, service start, and recovery policy
+    remain separately reviewed later stages.
+  - >-
+    This preflight inspects only bounded host facts and never reports backend
+    operational readiness.

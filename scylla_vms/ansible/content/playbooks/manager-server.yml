@@ -1,0 +1,403 @@
+---
+- name: Install exact ScyllaDB Manager server without backend or startup
+  hosts: manager
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - manager-server
+
+  pre_tasks:
+    - name: Validate exact Manager server install intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'manager'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_manager_server is mapping
+          - >-
+            deploy_scylla_vms_manager_server.schema_version ==
+            'deploy-scylla-vms.ansible-manager-server/v1'
+          - >-
+            deploy_scylla_vms_manager_server.logical_id ==
+            inventory_hostname
+          - deploy_scylla_vms_manager_server.channel == 'stable'
+          - deploy_scylla_vms_manager_server.release_line == '3.12'
+          - >-
+            deploy_scylla_vms_manager_server.backend_configured
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_server.configuration_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_server.registration_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_server.service_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_server.setup_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_server.tasks_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_server.service_unit ==
+            'scylla-manager.service'
+          - >-
+            deploy_scylla_vms_manager_server.packages ==
+            [
+              'scylla-manager-client',
+              'scylla-manager-server'
+            ]
+          - >-
+            deploy_scylla_vms_manager_server.package_version
+            is match(
+              '^3[.]12[.](0|[1-9][0-9]*)~0[.][0-9]{8}'
+              '[.][0-9a-f]{7,12}$'
+            )
+          - >-
+            deploy_scylla_vms_manager_server.image_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_manager_server.image_operating_system_version ==
+            '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_manager_server.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_manager_server.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+          - >-
+            deploy_scylla_vms_manager_server.signing_key.fingerprint ==
+            '6C6ECC84F42AF147BD2A65AEC503C686B007F39E'
+          - >-
+            deploy_scylla_vms_manager_server.signing_key.artifact_digest ==
+            'sha256:f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417'
+          - >-
+            deploy_scylla_vms_manager_server.signing_key.resource ==
+            'content/playbooks/roles/scylla_install/files/scylladb-2026.asc'
+        fail_msg: >-
+          Manager server installation requires current exact Ubuntu 24.04,
+          architecture, manager identity, version, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_SERVER_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-server/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'requested_release':
+                deploy_scylla_vms_manager_server.release_line,
+              'requested_version':
+                deploy_scylla_vms_manager_server.package_version,
+              'installed_version': none,
+              'packages': {},
+              'repository_digest':
+                deploy_scylla_vms_manager_server
+                .repository.definition_digest,
+              'signing_key_digest':
+                deploy_scylla_vms_manager_server
+                .signing_key.artifact_digest,
+              'signing_key_fingerprint':
+                deploy_scylla_vms_manager_server
+                .signing_key.fingerprint,
+              'service_masked': none,
+              'service_inactive': none,
+              'service_started': false,
+              'backend_configured': false,
+              'configuration_performed': false,
+              'registration_performed': false,
+              'setup_performed': false,
+              'tasks_performed': false,
+              'provenance':
+                deploy_scylla_vms_manager_server.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  tasks:
+    - name: Mask Manager before repository or package changes
+      ansible.builtin.systemd_service:
+        name: scylla-manager
+        enabled: false
+        masked: true
+      register: manager_server_initial_mask
+      tags:
+        - packages
+
+    - name: Create the owner-controlled APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags:
+        - packages
+
+    - name: Install the vendored authenticated ScyllaDB 2026 signing key
+      ansible.builtin.copy:
+        src: roles/scylla_install/files/scylladb-2026.asc
+        dest: /etc/apt/keyrings/scylladb-2026.asc
+        owner: root
+        group: root
+        mode: "0644"
+      register: manager_server_key
+      tags:
+        - packages
+
+    - name: Configure the exact signed Manager 3.12 repository
+      ansible.builtin.deb822_repository:
+        name: scylladb-manager-3-12
+        types:
+          - deb
+        uris:
+          - >-
+            {{
+              deploy_scylla_vms_manager_server.repository.uri
+            }}
+        suites:
+          - stable
+        components:
+          - main
+        architectures:
+          - >-
+            {{
+              'amd64'
+              if deploy_scylla_vms_manager_server.architecture == 'amd64'
+              else 'arm64'
+            }}
+        signed_by: /etc/apt/keyrings/scylladb-2026.asc
+        enabled: true
+        state: present
+        mode: "0644"
+      register: manager_server_repository
+      tags:
+        - packages
+
+    - name: Install the exact allowlisted Manager server packages
+      ansible.builtin.apt:
+        name: >-
+          {{
+            deploy_scylla_vms_manager_server.packages
+            | map(
+              'regex_replace',
+              '$',
+              '='
+              + deploy_scylla_vms_manager_server.package_version
+            )
+            | list
+          }}
+        state: present
+        update_cache: true
+        allow_downgrade: false
+        force: false
+        force_apt_get: true
+        install_recommends: false
+        policy_rc_d: 101
+      register: manager_server_packages
+      tags:
+        - packages
+
+    - name: Reassert masked and inactive Manager service
+      ansible.builtin.systemd_service:
+        name: scylla-manager
+        enabled: false
+        masked: true
+        state: stopped
+        daemon_reload: true
+      register: manager_server_final_mask
+      tags:
+        - verify
+
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: apt
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Initialize normalized package evidence
+      ansible.builtin.set_fact:
+        manager_server_installed_packages: {}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Build normalized package evidence
+      ansible.builtin.set_fact:
+        manager_server_installed_packages: >-
+          {{
+            manager_server_installed_packages
+            | combine({
+              item: (
+                ansible_facts.packages[item]
+                | map(attribute='version')
+                | unique
+                | list
+                | first
+              )
+            })
+          }}
+      loop: "{{ deploy_scylla_vms_manager_server.packages }}"
+      when:
+        - item in ansible_facts.packages
+        - >-
+          ansible_facts.packages[item]
+          | map(attribute='version')
+          | unique
+          | list
+          | length == 1
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Verify the exact installed package set and versions
+      ansible.builtin.assert:
+        that:
+          - >-
+            manager_server_installed_packages.keys()
+            | list
+            | sort
+            ==
+            deploy_scylla_vms_manager_server.packages
+          - >-
+            manager_server_installed_packages.values()
+            | unique
+            | list
+            ==
+            [deploy_scylla_vms_manager_server.package_version]
+          - "'scylla-server' not in ansible_facts.packages"
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect Manager service enablement
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-enabled
+          - scylla-manager.service
+      register: manager_server_service_enabled
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect Manager service activity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - scylla-manager.service
+      register: manager_server_service_active
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Refuse package-script startup or service unmasking
+      ansible.builtin.assert:
+        that:
+          - manager_server_service_enabled.stdout == 'masked'
+          - manager_server_service_active.stdout == 'inactive'
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized Manager server install evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_SERVER_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-server/v1',
+              'logical_id': inventory_hostname,
+              'status': (
+                'installed'
+                if (
+                  manager_server_initial_mask.changed
+                  or manager_server_key.changed
+                  or manager_server_repository.changed
+                  or manager_server_packages.changed
+                  or manager_server_final_mask.changed
+                )
+                else 'no-change'
+              ),
+              'requested_release':
+                deploy_scylla_vms_manager_server.release_line,
+              'requested_version':
+                deploy_scylla_vms_manager_server.package_version,
+              'installed_version':
+                deploy_scylla_vms_manager_server.package_version,
+              'packages': manager_server_installed_packages,
+              'repository_digest':
+                deploy_scylla_vms_manager_server
+                .repository.definition_digest,
+              'signing_key_digest':
+                deploy_scylla_vms_manager_server
+                .signing_key.artifact_digest,
+              'signing_key_fingerprint':
+                deploy_scylla_vms_manager_server
+                .signing_key.fingerprint,
+              'service_masked': true,
+              'service_inactive': true,
+              'service_started': false,
+              'backend_configured': false,
+              'configuration_performed': false,
+              'registration_performed': false,
+              'setup_performed': false,
+              'tasks_performed': false,
+              'provenance':
+                deploy_scylla_vms_manager_server.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

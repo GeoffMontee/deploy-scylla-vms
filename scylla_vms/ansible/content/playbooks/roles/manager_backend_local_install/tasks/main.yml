@@ -1,0 +1,215 @@
+---
+- name: Mask and stop local Scylla before package work
+  ansible.builtin.systemd_service:
+    name: scylla-server
+    enabled: false
+    masked: true
+    state: stopped
+  register: manager_backend_local_install_initial_mask
+  tags:
+    - packages
+
+- name: Create the owner-controlled APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  register: manager_backend_local_install_keyring
+  tags:
+    - packages
+
+- name: Install the vendored authenticated ScyllaDB signing key
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/roles/scylla_install/files/scylladb-2026.asc"
+    dest: /etc/apt/keyrings/scylladb-2026.asc
+    owner: root
+    group: root
+    mode: "0644"
+  register: manager_backend_local_install_key
+  tags:
+    - packages
+
+- name: Configure the exact signed ScyllaDB 2026.2 repository
+  ansible.builtin.deb822_repository:
+    name: scylladb-2026-2
+    types:
+      - deb
+    uris:
+      - >-
+        {{
+          deploy_scylla_vms_manager_backend_local_install.repository.uri
+        }}
+    suites:
+      - stable
+    components:
+      - main
+    architectures:
+      - >-
+        {{
+          'amd64'
+          if deploy_scylla_vms_manager_backend_local_install.architecture ==
+          'amd64'
+          else 'arm64'
+        }}
+    signed_by: /etc/apt/keyrings/scylladb-2026.asc
+    enabled: true
+    state: present
+    mode: "0644"
+  register: manager_backend_local_install_repository
+  tags:
+    - packages
+
+- name: Install the exact allowlisted local ScyllaDB package set
+  ansible.builtin.apt:
+    name: >-
+      {{
+        deploy_scylla_vms_manager_backend_local_install.packages
+        | map(
+          'regex_replace',
+          '$',
+          '='
+          + deploy_scylla_vms_manager_backend_local_install.package_version
+        )
+        | list
+      }}
+    state: present
+    update_cache: true
+    allow_downgrade: false
+    force: false
+    force_apt_get: true
+    install_recommends: false
+    policy_rc_d: 101
+  register: manager_backend_local_install_transaction
+  tags:
+    - packages
+
+- name: Reassert masked and inactive local Scylla
+  ansible.builtin.systemd_service:
+    name: scylla-server
+    enabled: false
+    masked: true
+    state: stopped
+    daemon_reload: true
+  register: manager_backend_local_install_final_mask
+  tags:
+    - verify
+
+- name: Gather installed package facts
+  ansible.builtin.package_facts:
+    manager: apt
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Initialize normalized local package evidence
+  ansible.builtin.set_fact:
+    manager_backend_local_install_packages: {}
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Build normalized local package evidence
+  ansible.builtin.set_fact:
+    manager_backend_local_install_packages: >-
+      {{
+        manager_backend_local_install_packages
+        | combine({
+          item: (
+            ansible_facts.packages[item]
+            | map(attribute='version')
+            | unique
+            | list
+            | first
+          )
+        })
+      }}
+  loop: "{{ deploy_scylla_vms_manager_backend_local_install.packages }}"
+  when:
+    - item in ansible_facts.packages
+    - >-
+      ansible_facts.packages[item]
+      | map(attribute='version')
+      | unique
+      | list
+      | length == 1
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Verify the exact installed local package set and versions
+  ansible.builtin.assert:
+    that:
+      - >-
+        manager_backend_local_install_packages.keys()
+        | list
+        | sort
+        ==
+        deploy_scylla_vms_manager_backend_local_install.packages
+      - >-
+        manager_backend_local_install_packages.values()
+        | unique
+        | list
+        ==
+        [deploy_scylla_vms_manager_backend_local_install.package_version]
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Inspect local Scylla service enablement
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - scylla-server.service
+  register: manager_backend_local_install_service_enabled
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Inspect local Scylla service activity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - scylla-server.service
+  register: manager_backend_local_install_service_active
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Refuse package-script startup or service unmasking
+  ansible.builtin.assert:
+    that:
+      - manager_backend_local_install_service_enabled.stdout == 'masked'
+      - manager_backend_local_install_service_active.stdout == 'inactive'
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - verify
+
+- name: Record whether exact package-only convergence changed state
+  ansible.builtin.set_fact:
+    manager_backend_local_install_changed: >-
+      {{
+        manager_backend_local_install_initial_mask.changed
+        or manager_backend_local_install_keyring.changed
+        or manager_backend_local_install_key.changed
+        or manager_backend_local_install_repository.changed
+        or manager_backend_local_install_transaction.changed
+        or manager_backend_local_install_final_mask.changed
+      }}
+  changed_when: false
+  tags:
+    - verify

@@ -1,0 +1,52 @@
+---
+- name: Install minimal Ubuntu prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - python3-debian
+      - systemd-timesyncd
+      - tar
+      - unzip
+    state: present
+    update_cache: false
+  register: base_os_packages
+  tags:
+    - base-os
+
+- name: Enable and start systemd time synchronization
+  ansible.builtin.systemd_service:
+    name: systemd-timesyncd
+    enabled: true
+    state: started
+  register: base_os_time_service
+  tags:
+    - base-os
+
+- name: Inspect Ubuntu reboot-required marker
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+    follow: false
+    get_attributes: false
+    get_checksum: false
+    get_mime: false
+  register: base_os_reboot_marker
+  check_mode: false
+  changed_when: false
+  tags:
+    - always
+
+- name: Build allowlisted baseline result facts
+  ansible.builtin.set_fact:
+    base_os_changed: >-
+      {{
+        base_os_packages.changed
+        or base_os_time_service.changed
+      }}
+    base_os_reboot_required: >-
+      {{
+        base_os_reboot_marker.stat.exists | default(false)
+      }}
+  changed_when: false
+  no_log: true
+  tags:
+    - always

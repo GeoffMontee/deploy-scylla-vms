@@ -1,0 +1,195 @@
+---
+- name: Initialize conservative cleanup mutation boundary
+  ansible.builtin.set_fact:
+    scylla_cleanup_mutation_boundary: not-started
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Complete one exact post-expansion cleanup
+  block:
+    - name: Revalidate target identity version and full cluster immediately
+      scylla_cleanup:
+        action: inspect
+        expected_ring: "{{ deploy_scylla_vms_scylla_cleanup.expected_ring }}"
+        host_id: "{{ deploy_scylla_vms_scylla_cleanup.host_id }}"
+        server_version: "{{ deploy_scylla_vms_scylla_cleanup.server_version }}"
+        timeout_seconds: 60
+      register: scylla_cleanup_precheck
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: >-
+        Refuse health schema streaming identity version or pending-work drift
+      ansible.builtin.assert:
+        that:
+          - scylla_cleanup_precheck.inspection.command_ok
+          - scylla_cleanup_precheck.inspection.health_ok
+          - scylla_cleanup_precheck.inspection.host_id_matches
+          - scylla_cleanup_precheck.inspection.version_matches
+          - scylla_cleanup_precheck.inspection.schema_agreed
+          - scylla_cleanup_precheck.inspection.streaming_complete
+          - not scylla_cleanup_precheck.inspection.pending_work
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Journal cleanup command-started boundary
+      ansible.builtin.set_fact:
+        scylla_cleanup_mutation_boundary: command-started
+      changed_when: false
+      no_log: true
+      tags:
+        - cleanup
+
+    - name: Run exact foreground full cleanup command
+      scylla_cleanup:
+        action: cleanup
+        expected_ring: "{{ deploy_scylla_vms_scylla_cleanup.expected_ring }}"
+        host_id: "{{ deploy_scylla_vms_scylla_cleanup.host_id }}"
+        server_version: "{{ deploy_scylla_vms_scylla_cleanup.server_version }}"
+        timeout_seconds: >-
+          {{ deploy_scylla_vms_scylla_cleanup.timeout_seconds }}
+      register: scylla_cleanup_command
+      no_log: true
+      tags:
+        - cleanup
+
+    - name: Require exact cleanup command success
+      ansible.builtin.assert:
+        that:
+          - >-
+            scylla_cleanup_command.cleanup.command ==
+            ['/usr/bin/nodetool', 'cleanup']
+          - scylla_cleanup_command.cleanup.exit_zero
+          - not scylla_cleanup_command.cleanup.timed_out
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - cleanup
+
+    - name: Journal cleanup command-completed boundary
+      ansible.builtin.set_fact:
+        scylla_cleanup_mutation_boundary: command-completed
+      changed_when: false
+      no_log: true
+      tags:
+        - cleanup
+
+    - name: Poll pending work and full post-cleanup health
+      scylla_cleanup:
+        action: poll
+        expected_ring: "{{ deploy_scylla_vms_scylla_cleanup.expected_ring }}"
+        host_id: "{{ deploy_scylla_vms_scylla_cleanup.host_id }}"
+        server_version: "{{ deploy_scylla_vms_scylla_cleanup.server_version }}"
+        timeout_seconds: >-
+          {{ deploy_scylla_vms_scylla_cleanup.timeout_seconds }}
+      register: scylla_cleanup_postcheck
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Require completed pending work and healthy exact cluster
+      ansible.builtin.assert:
+        that:
+          - scylla_cleanup_postcheck.inspection.command_ok
+          - scylla_cleanup_postcheck.inspection.health_ok
+          - scylla_cleanup_postcheck.inspection.schema_agreed
+          - scylla_cleanup_postcheck.inspection.streaming_complete
+          - not scylla_cleanup_postcheck.inspection.pending_work
+          - >-
+            not (scylla_cleanup_postcheck.inspection.poll_timed_out |
+            default(false))
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Retain successful cleanup evidence
+      ansible.builtin.set_fact:
+        scylla_cleanup_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-cleanup/v1
+          status: completed
+          stable_id: "{{ inventory_hostname }}"
+          host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_cleanup.host_id | hash('sha256')
+            }}
+          topology_change_digest: >-
+            {{ deploy_scylla_vms_scylla_cleanup.topology_change_digest }}
+          repair_result_digest: >-
+            {{ deploy_scylla_vms_scylla_cleanup.repair_result_digest }}
+          pre_health_digest: >-
+            {{ deploy_scylla_vms_scylla_cleanup.health_digest }}
+          post_health_digest: >-
+            {{ scylla_cleanup_postcheck.inspection.health_digest }}
+          command_evidence: exit-zero
+          pending_work_evidence: none
+          mutation_boundary: postchecks-passed
+          recovery_required: false
+          blockers: []
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Retain conservative cleanup failure evidence
+      ansible.builtin.set_fact:
+        scylla_cleanup_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-cleanup/v1
+          status: failed
+          stable_id: "{{ inventory_hostname }}"
+          host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_cleanup.host_id | hash('sha256')
+            }}
+          topology_change_digest: >-
+            {{ deploy_scylla_vms_scylla_cleanup.topology_change_digest }}
+          repair_result_digest: >-
+            {{ deploy_scylla_vms_scylla_cleanup.repair_result_digest }}
+          pre_health_digest: >-
+            {{ deploy_scylla_vms_scylla_cleanup.health_digest }}
+          post_health_digest: null
+          command_evidence: >-
+            {{
+              'not-run'
+              if scylla_cleanup_mutation_boundary == 'not-started'
+              else 'unknown'
+            }}
+          pending_work_evidence: not-proven
+          mutation_boundary: "{{ scylla_cleanup_mutation_boundary }}"
+          recovery_required: true
+          blockers:
+            - >-
+              {{
+                'revalidation-failed'
+                if scylla_cleanup_mutation_boundary == 'not-started'
+                else 'cleanup-timeout'
+                if (
+                  scylla_cleanup_command is defined
+                  and scylla_cleanup_command.cleanup is defined
+                  and scylla_cleanup_command.cleanup.timed_out
+                )
+                else 'command-failed'
+                if scylla_cleanup_mutation_boundary == 'command-started'
+                else 'pending-work'
+                if (
+                  scylla_cleanup_postcheck is defined
+                  and scylla_cleanup_postcheck.inspection is defined
+                  and scylla_cleanup_postcheck.inspection.pending_work
+                )
+                else 'post-health-failed'
+              }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery

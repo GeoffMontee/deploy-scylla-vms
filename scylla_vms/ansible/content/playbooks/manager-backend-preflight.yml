@@ -1,0 +1,93 @@
+---
+- name: Inspect Manager local-backend planning evidence without mutation
+  hosts: manager
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - manager-backend-preflight
+
+  pre_tasks:
+    - name: Validate exact Manager target and read-only backend policy
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'manager'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_manager_backend_preflight is mapping
+          - >-
+            deploy_scylla_vms_manager_backend_preflight.schema_version ==
+            'deploy-scylla-vms.ansible-manager-backend-preflight/v1'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_manager_backend_preflight.role == 'manager'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.backend_mode == 'local-one-node'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.target_role == 'manager'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.managed_data_cluster_backend == 'forbidden'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.cql_network_ingress == 'forbidden'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.contact_scope == 'loopback-only'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.cql_port == 9042
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.scylla_release == '2026.2'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.backend_credentials == 'not-required'
+          - >-
+            deploy_scylla_vms_manager_backend_preflight
+            .backend_policy.backend_tls == 'not-required'
+        fail_msg: >-
+          Manager backend preflight requires one exact trusted Manager target
+          and the reviewed local-one-node loopback-only policy.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: manager_backend_preflight
+      tags:
+        - manager-backend-preflight
+
+  post_tasks:
+    - name: Emit strict normalized Manager backend preflight evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_BACKEND_PREFLIGHT_B64={{
+            manager_backend_preflight_result | to_json | b64encode
+          }}
+      when: manager_backend_preflight_result is defined
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after preserving failed Manager backend preflight evidence
+      ansible.builtin.fail:
+        msg: >-
+          Manager backend preflight could not establish bounded host evidence.
+          Preserve the host and rerun only after reconciliation.
+      when: >-
+        manager_backend_preflight_result is defined
+        and manager_backend_preflight_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

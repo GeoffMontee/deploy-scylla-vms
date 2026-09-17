@@ -1,0 +1,231 @@
+---
+- name: Refuse unapproved immutable OS reprovision without host mutation
+  hosts: all
+  gather_facts: true
+  become: false
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - os-reprovision-prepare
+
+  pre_tasks:
+    - name: Hard refuse reprovision preparation in check mode
+      ansible.builtin.fail:
+        msg: >-
+          OS-reprovision preparation check mode is refused because it
+          coordinates a destructive provider replacement boundary.
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+        - preflight
+
+    - name: Validate exact immutable reprovision refusal request
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - >-
+            deploy_scylla_vms_role in
+            ['scylla', 'manager', 'monitoring', 'jump-host']
+          - deploy_scylla_vms_os_reprovision_prepare is mapping
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.schema_version ==
+            'deploy-scylla-vms.ansible-os-reprovision-prepare/v1'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.role ==
+            deploy_scylla_vms_role
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .current_operating_system == 'Ubuntu'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .current_operating_system_version == '24.04'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .target_operating_system == 'Ubuntu'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .target_operating_system_version != '24.04'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .transition_classification == 'unapproved'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .reprovision_classification == 'validation-only'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.applied is sameas false
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.automatic_retry
+            is sameas false
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .stable_identity_preserved is sameas true
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .provider_identity_policy == 'must-change-after-replacement'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare
+            .replacement_provider_id_state == 'not-created'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.mutation_boundary ==
+            'not-started'
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.recovery_required
+            is sameas false
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.authorization.reviewed
+            is sameas true
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.authorization
+            .allow_destructive is sameas true
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.authorization
+            .no_competing_operation is sameas true
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.authorization
+            .confirmed_target == inventory_hostname
+          - >-
+            deploy_scylla_vms_os_reprovision_prepare.provider_source_digests
+            is mapping
+          - deploy_scylla_vms_os_reprovision_prepare.provenance is mapping
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - ansible_facts.system == 'Linux'
+          - >-
+            ansible_facts.architecture ==
+            deploy_scylla_vms_os_reprovision_prepare.guest_architecture
+        fail_msg: >-
+          OS-reprovision preparation requires one exact current Ubuntu 24.04
+          stable ID, matching current and target provider-image facts, current
+          preflight/lifecycle evidence, and digest-bound destructive scope.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  tasks:
+    - name: Retain strict blocked evidence before provider replacement
+      ansible.builtin.set_fact:
+        os_reprovision_prepare_result:
+          schema_version: deploy-scylla-vms.ansible-os-reprovision-prepare/v1
+          logical_id: "{{ inventory_hostname }}"
+          role: "{{ deploy_scylla_vms_os_reprovision_prepare.role }}"
+          role_classification: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.role_classification
+            }}
+          status: blocked
+          transition_classification: unapproved
+          reprovision_classification: validation-only
+          current_operating_system: Ubuntu
+          current_operating_system_version: "24.04"
+          current_architecture: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.current_architecture
+            }}
+          target_operating_system: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.target_operating_system
+            }}
+          target_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare
+              .target_operating_system_version
+            }}
+          target_architecture: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.target_architecture
+            }}
+          stable_identity_preserved: true
+          provider_identity_policy: must-change-after-replacement
+          replacement_provider_id_state: not-created
+          current_provider_id_digest: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare
+              .current_provider_id_digest
+            }}
+          current_image_facts_digest: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare
+              .current_image_facts_digest
+            }}
+          target_image_facts_digest: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare
+              .target_image_facts_digest
+            }}
+          current_image_id_digest: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.current_image_id_digest
+            }}
+          target_image_id_digest: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.target_image_id_digest
+            }}
+          provider_source_digests: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare
+              .provider_source_digests
+            }}
+          storage_disposition: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.storage_disposition
+            }}
+          membership_readiness: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.membership_readiness
+            }}
+          service_readiness: >-
+            {{
+              deploy_scylla_vms_os_reprovision_prepare.service_readiness
+            }}
+          lifecycle_path: >-
+            {{ deploy_scylla_vms_os_reprovision_prepare.lifecycle_path }}
+          applied: false
+          automatic_retry: false
+          configuration_action: not-performed
+          desired_state_action: not-performed
+          membership_action: not-performed
+          package_action: not-performed
+          provider_action: not-performed
+          reboot_action: not-performed
+          registration_action: not-performed
+          restore_action: not-performed
+          service_action: not-performed
+          storage_action: not-performed
+          terraform_action: not-performed
+          trust_action: not-performed
+          vm_action: not-performed
+          mutation_boundary: not-started
+          recovery_required: false
+          not_performed: >-
+            {{ deploy_scylla_vms_os_reprovision_prepare.not_performed }}
+          provenance: >-
+            {{ deploy_scylla_vms_os_reprovision_prepare.provenance }}
+          blockers: >-
+            {{ deploy_scylla_vms_os_reprovision_prepare.blockers }}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized immutable reprovision refusal evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_OS_REPROVISION_PREPARE_B64={{
+            os_reprovision_prepare_result | to_json | b64encode
+          }}
+      when: os_reprovision_prepare_result is defined
+      changed_when: false
+      tags:
+        - always

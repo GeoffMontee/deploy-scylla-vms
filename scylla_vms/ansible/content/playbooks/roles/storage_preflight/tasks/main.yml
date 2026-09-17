@@ -1,0 +1,7 @@
+---
+- name: Retain only the validated controller preflight projection
+  ansible.builtin.set_fact:
+    storage_preflight_result: >-
+      {{ deploy_scylla_vms_storage_preflight[inventory_hostname] }}
+  changed_when: false
+  no_log: true

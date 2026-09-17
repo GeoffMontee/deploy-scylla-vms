@@ -1,0 +1,120 @@
+---
+- name: Start exactly one authorized ScyllaDB bootstrap or join target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-bootstrap
+
+  pre_tasks:
+    - name: Emit truthful check-mode non-prediction
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_BOOTSTRAP_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-bootstrap/v1',
+              'mode': deploy_scylla_vms_scylla_bootstrap.mode,
+              'status': 'not-predicted',
+              'target_logical_id': inventory_hostname,
+              'service_state': 'not-checked',
+              'ring_membership_digest': none,
+              'host_id_digest': none,
+              'datacenter':
+                deploy_scylla_vms_scylla_bootstrap.datacenter,
+              'rack': deploy_scylla_vms_scylla_bootstrap.rack,
+              'streaming_state': 'not-checked',
+              'prerequisite_digests':
+                deploy_scylla_vms_scylla_bootstrap.prerequisite_digests,
+              'mutation_boundary': 'not-reached',
+              'recovery_required': false,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Refuse bootstrap prediction in check mode
+      ansible.builtin.fail:
+        msg: >-
+          Scylla bootstrap check mode is refused because first start can change
+          ring membership and cannot be safely predicted.
+      when: ansible_check_mode
+      tags:
+        - always
+
+    - name: Validate exact bootstrap target and reviewed mode
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_bootstrap is mapping
+          - >-
+            deploy_scylla_vms_scylla_bootstrap.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-bootstrap/v1'
+          - >-
+            deploy_scylla_vms_scylla_bootstrap.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_scylla_bootstrap.mode
+            in ['initial-seed', 'join-existing']
+          - deploy_scylla_vms_scylla_bootstrap.release_line == '2026.2'
+          - >-
+            deploy_scylla_vms_scylla_bootstrap.package_version
+            is match(
+              '^2026[.]2[.](0|[1-9][0-9]*)-0[.][0-9]{8}'
+              '[.][0-9a-f]{12}-1$'
+            )
+          - deploy_scylla_vms_scylla_bootstrap.authorization.reviewed
+          - >-
+            not deploy_scylla_vms_scylla_bootstrap
+            .authorization.target_present_in_ring
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: >-
+          Scylla bootstrap requires one exact stable-ID target and current,
+          reviewed, digest-bound prerequisites.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: scylla_bootstrap
+      tags:
+        - scylla-bootstrap
+
+  post_tasks:
+    - name: Emit strict normalized Scylla bootstrap evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_BOOTSTRAP_B64={{
+            scylla_bootstrap_result | to_json | b64encode
+          }}
+      changed_when: >-
+        scylla_bootstrap_result.mutation_boundary != 'not-reached'
+      no_log: false
+      tags:
+        - always
+
+    - name: Stop after preserving bootstrap recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Scylla bootstrap failed after its mutation boundary. Do not destroy
+          or retry automatically; use a reviewed recovery procedure.
+      when: scylla_bootstrap_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

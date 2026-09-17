@@ -1,0 +1,8 @@
+---
+- name: Collect normalized read-only storage facts
+  storage_discover:
+    ownership_marker_name: .deploy-scylla-vms-storage.json
+  register: storage_discover_result
+  check_mode: false
+  changed_when: false
+  no_log: true

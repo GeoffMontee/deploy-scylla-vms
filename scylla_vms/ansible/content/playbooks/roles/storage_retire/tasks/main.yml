@@ -1,0 +1,15 @@
+---
+- name: Revalidate and retire only the authorized exact device set
+  storage_retire:
+    intent: "{{ deploy_scylla_vms_storage_retire }}"
+  register: storage_retire_module
+  changed_when: storage_retire_module.changed | bool
+  failed_when: false
+  no_log: true
+
+- name: Retain only bounded storage retirement evidence
+  ansible.builtin.set_fact:
+    storage_retire_result: >-
+      {{ storage_retire_module.storage_retire_result }}
+  changed_when: false
+  no_log: true

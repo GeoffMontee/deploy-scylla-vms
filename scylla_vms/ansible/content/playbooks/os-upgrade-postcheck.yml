@@ -1,0 +1,82 @@
+---
+- name: Verify one OS-upgrade result without remediation
+  hosts: all
+  gather_facts: true
+  become: false
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - os-upgrade-postcheck
+
+  pre_tasks:
+    - name: Validate exact read-only postcheck request and source evidence
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - >-
+            deploy_scylla_vms_role in
+            ['scylla', 'manager', 'monitoring', 'jump-host']
+          - deploy_scylla_vms_os_upgrade_postcheck is mapping
+          - >-
+            deploy_scylla_vms_os_upgrade_postcheck.schema_version ==
+            'deploy-scylla-vms.ansible-os-upgrade-postcheck/v1'
+          - >-
+            deploy_scylla_vms_os_upgrade_postcheck.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_os_upgrade_postcheck.role ==
+            deploy_scylla_vms_role
+          - >-
+            deploy_scylla_vms_os_upgrade_postcheck.source_mode in
+            ['in-place', 'reprovision']
+          - >-
+            deploy_scylla_vms_os_upgrade_postcheck
+            .source_upgrade_performed is sameas false
+          - >-
+            'source-upgrade-not-performed' in
+            deploy_scylla_vms_os_upgrade_postcheck.controller_blockers
+          - >-
+            deploy_scylla_vms_os_upgrade_postcheck.provenance is mapping
+          - ansible_facts.system == 'Linux'
+        fail_msg: >-
+          OS-upgrade postcheck requires one exact current stable ID, matching
+          role and source-operation evidence, current provenance, mandatory
+          host-key checking, and a strictly read-only verification payload.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: os_upgrade_postcheck
+      tags:
+        - os-upgrade-postcheck
+
+  post_tasks:
+    - name: Emit strict normalized OS-upgrade postcheck evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_OS_UPGRADE_POSTCHECK_B64={{
+            os_upgrade_postcheck_result | to_json | b64encode
+          }}
+      when: os_upgrade_postcheck_result is defined
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after preserving failed postcheck evidence
+      ansible.builtin.fail:
+        msg: >-
+          OS-upgrade postcheck could not establish bounded host evidence.
+          No remediation was attempted; reconcile before any rollout step.
+      when: >-
+        os_upgrade_postcheck_result is defined
+        and os_upgrade_postcheck_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

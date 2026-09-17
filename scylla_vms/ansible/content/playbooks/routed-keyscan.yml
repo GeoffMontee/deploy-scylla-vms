@@ -1,0 +1,57 @@
+---
+- name: Collect bounded private-host SSH key candidates from one trusted jump
+  hosts: jump_hosts
+  gather_facts: false
+  become: false
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  check_mode: true
+  tags:
+    - routed-keyscan
+
+  pre_tasks:
+    - name: Validate the exact trusted jump execution boundary
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'jump-host'
+          - deploy_scylla_vms_route_mode == 'direct'
+          - deploy_scylla_vms_jump_host_id is none
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_routed_keyscan is mapping
+          - >-
+            deploy_scylla_vms_routed_keyscan.schema_version ==
+            'deploy-scylla-vms.ansible-routed-keyscan-request/v1'
+          - >-
+            deploy_scylla_vms_routed_keyscan.jump_host_id ==
+            inventory_hostname
+          - deploy_scylla_vms_routed_keyscan.targets | length > 0
+          - deploy_scylla_vms_routed_keyscan.targets | length <= 64
+        fail_msg: >-
+          Routed SSH keyscan requires one exact directly routed, currently
+          trusted jump stable ID and a bounded inventory-derived request.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: routed_keyscan
+      tags:
+        - routed-keyscan
+
+  post_tasks:
+    - name: Emit strict address-free routed keyscan evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_ROUTED_KEYSCAN_B64={{
+            routed_keyscan_result | to_json | b64encode
+          }}
+      when: routed_keyscan_result is defined
+      changed_when: false
+      tags:
+        - always

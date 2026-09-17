@@ -1,0 +1,151 @@
+---
+- name: Apply the supported minimal operating-system baseline
+  hosts: all
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - base-os
+  pre_tasks:
+    - name: Validate target identity and execution safety
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_role
+            in ['jump-host', 'manager', 'monitoring', 'scylla']
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Gather bounded guest identity facts
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - distribution
+        filter:
+          - ansible_architecture
+          - ansible_distribution
+          - ansible_distribution_version
+          - ansible_os_family
+      register: deploy_scylla_vms_base_os_facts
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Classify configured image evidence and guest facts
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_base_os_image_supported: >-
+          {{
+            [
+              deploy_scylla_vms_image_operating_system,
+              deploy_scylla_vms_image_operating_system_version,
+              deploy_scylla_vms_image_architecture
+            ]
+            in [
+              ['Ubuntu', '24.04', 'amd64'],
+              ['Ubuntu', '24.04', 'aarch64']
+            ]
+          }}
+        deploy_scylla_vms_base_os_guest_matches: >-
+          {{
+            ansible_facts.distribution == 'Ubuntu'
+            and ansible_facts.distribution_version == '24.04'
+            and ansible_facts.os_family == 'Debian'
+            and (
+              (
+                deploy_scylla_vms_image_architecture == 'amd64'
+                and ansible_facts.architecture == 'x86_64'
+              )
+              or
+              (
+                deploy_scylla_vms_image_architecture == 'aarch64'
+                and ansible_facts.architecture == 'aarch64'
+              )
+            )
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Emit refused image or guest evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_BASE_OS_B64={{
+            {
+              'schema_version': 'deploy-scylla-vms.ansible-base-os/v1',
+              'logical_id': deploy_scylla_vms_logical_id,
+              'status': 'unsupported',
+              'changed': false,
+              'reboot_required': false,
+              'reason': (
+                'image-evidence-unsupported'
+                if not deploy_scylla_vms_base_os_image_supported
+                else 'guest-facts-mismatch'
+              )
+            }
+            | to_json
+            | b64encode
+          }}
+      when: >-
+        not deploy_scylla_vms_base_os_image_supported
+        or not deploy_scylla_vms_base_os_guest_matches
+      changed_when: false
+      tags:
+        - always
+
+    - name: Refuse unsupported image evidence or mismatched guest facts
+      ansible.builtin.fail:
+        msg: Configured image evidence or guest facts are unsupported
+      when: >-
+        not deploy_scylla_vms_base_os_image_supported
+        or not deploy_scylla_vms_base_os_guest_matches
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: base_os
+      tags:
+        - base-os
+
+  post_tasks:
+    - name: Emit allowlisted base operating-system result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_BASE_OS_B64={{
+            {
+              'schema_version': 'deploy-scylla-vms.ansible-base-os/v1',
+              'logical_id': deploy_scylla_vms_logical_id,
+              'status': (
+                'reboot-required'
+                if base_os_reboot_required
+                else 'changed'
+                if base_os_changed
+                else 'no-change'
+              ),
+              'changed': base_os_changed,
+              'reboot_required': base_os_reboot_required,
+              'reason': (
+                'reboot-required'
+                if base_os_reboot_required
+                else 'applied'
+                if base_os_changed
+                else 'already-current'
+              )
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      tags:
+        - always

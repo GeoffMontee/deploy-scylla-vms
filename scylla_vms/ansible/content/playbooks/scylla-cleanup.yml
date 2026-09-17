@@ -1,0 +1,104 @@
+---
+- name: Clean one exact post-expansion ScyllaDB stable logical target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-cleanup
+
+  pre_tasks:
+    - name: Emit truthful cleanup check-mode refusal
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_CLEANUP_B64={{
+            {
+              'schema_version': 'deploy-scylla-vms.ansible-scylla-cleanup/v1',
+              'status': 'not-predicted',
+              'stable_id': inventory_hostname,
+              'host_id_digest': 'sha256:' + (
+                deploy_scylla_vms_scylla_cleanup.host_id | hash('sha256')
+              ),
+              'topology_change_digest':
+                deploy_scylla_vms_scylla_cleanup.topology_change_digest,
+              'repair_result_digest':
+                deploy_scylla_vms_scylla_cleanup.repair_result_digest,
+              'pre_health_digest':
+                deploy_scylla_vms_scylla_cleanup.health_digest,
+              'post_health_digest': none,
+              'command_evidence': 'not-run',
+              'pending_work_evidence': 'not-predicted',
+              'mutation_boundary': 'not-started',
+              'recovery_required': false,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Hard refuse cleanup prediction in check mode
+      ansible.builtin.fail:
+        msg: Scylla cleanup cannot be safely predicted in check mode.
+      when: ansible_check_mode
+      tags:
+        - always
+
+    - name: Validate exact cleanup target and authorization
+      ansible.builtin.assert:
+        that:
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_logical_id == inventory_hostname
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_cleanup is mapping
+          - >-
+            deploy_scylla_vms_scylla_cleanup.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-cleanup/v1'
+          - deploy_scylla_vms_scylla_cleanup.stable_id == inventory_hostname
+          - deploy_scylla_vms_scylla_cleanup.authorization.reviewed
+          - >-
+            deploy_scylla_vms_scylla_cleanup.cleanup_command ==
+            ['/usr/bin/nodetool', 'cleanup']
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+        quiet: true
+        fail_msg: >-
+          Cleanup requires one exact eligible stable ID and narrow reviewed
+          digest-bound authorization.
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: scylla_cleanup
+      tags:
+        - scylla-cleanup
+
+  post_tasks:
+    - name: Emit strict normalized cleanup evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_CLEANUP_B64={{
+            scylla_cleanup_result | to_json | b64encode
+          }}
+      changed_when: scylla_cleanup_result.mutation_boundary != 'not-started'
+      tags:
+        - always
+
+    - name: Stop after preserving cleanup recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Cleanup was not proven complete. Do not retry automatically or proceed
+          to another node; reconcile health and review the journal first.
+      when: scylla_cleanup_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

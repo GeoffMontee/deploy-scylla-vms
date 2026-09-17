@@ -1,0 +1,184 @@
+---
+- name: Validate full-cluster Scylla shutdown without unreviewed mutation
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-cluster-shutdown
+
+  pre_tasks:
+    - name: Validate exact full-cluster shutdown intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_cluster_shutdown is mapping
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-cluster-shutdown/v1'
+          - deploy_scylla_vms_scylla_cluster_shutdown.applied is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.drain_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.stop_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.mask_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.manager_quiesce_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.decommission_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.removenode_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.start_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.terraform_ran
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.vm_destroyed
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.storage_wiped
+            is sameas false
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.mutation_boundary ==
+            'not-started'
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.authorization.reviewed
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.authorization
+            .allow_destructive
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.authorization
+            .allow_manager_not_applicable
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.authorization
+            .manager_applicability == 'not-applicable'
+          - >-
+            deploy_scylla_vms_scylla_cluster_shutdown.hosts
+            | map(attribute='logical_id')
+            | list
+            | select('equalto', inventory_hostname)
+            | list
+            | length == 1
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: >-
+          Scylla cluster shutdown requires current exact Ubuntu 24.04 Scylla
+          identity, complete-set membership, and digest-bound destructive
+          authorization.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode refusal
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_CLUSTER_SHUTDOWN_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-cluster-shutdown/v1',
+              'status': 'not-predicted',
+              'applied': false,
+              'drain_performed': false,
+              'stop_performed': false,
+              'mask_performed': false,
+              'manager_quiesce_performed': false,
+              'decommission_performed': false,
+              'removenode_performed': false,
+              'start_performed': false,
+              'terraform_ran': false,
+              'vm_destroyed': false,
+              'storage_wiped': false,
+              'mutation_boundary': 'not-started',
+              'recovery_required': false,
+              'nodes': [
+                {
+                  'logical_id': inventory_hostname,
+                  'host_id_digest':
+                    'sha256:' + (
+                      (
+                        deploy_scylla_vms_scylla_cluster_shutdown.hosts
+                        | selectattr(
+                          'logical_id', 'equalto', inventory_hostname
+                        )
+                        | map(attribute='host_id')
+                        | first
+                      )
+                      | hash('sha256')
+                    ),
+                  'drain_state': 'not-predicted',
+                  'stop_state': 'not-predicted',
+                  'mask_state': 'not-predicted',
+                  'observed_enabled': none,
+                  'observed_active': none
+                }
+              ],
+              'not_performed':
+                deploy_scylla_vms_scylla_cluster_shutdown.not_performed,
+              'provenance':
+                deploy_scylla_vms_scylla_cluster_shutdown.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Hard refuse cluster-shutdown prediction in check mode
+      ansible.builtin.fail:
+        msg: >-
+          Scylla cluster shutdown check mode is refused because drain and stop
+          mutation cannot be safely predicted.
+      when: ansible_check_mode
+      tags:
+        - always
+
+  roles:
+    - role: scylla_cluster_shutdown
+      when: not ansible_check_mode
+      tags:
+        - scylla-cluster-shutdown
+
+  post_tasks:
+    - name: Emit strict normalized cluster-shutdown evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_CLUSTER_SHUTDOWN_B64={{
+            scylla_cluster_shutdown_result | to_json | b64encode
+          }}
+      when: scylla_cluster_shutdown_result is defined
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after preserving refusal evidence
+      ansible.builtin.fail:
+        msg: >-
+          Scylla cluster shutdown did not prove a reviewed drain/stop path.
+          Preserve the cluster; do not invent or retry mutation.
+      when: >-
+        scylla_cluster_shutdown_result is defined
+        and scylla_cluster_shutdown_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

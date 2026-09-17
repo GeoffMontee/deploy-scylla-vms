@@ -1,0 +1,12 @@
+---
+- name: Validate the internal localhost runner fixture
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  check_mode: true
+  tasks:
+    - name: Assert the fixture remains non-mutating
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode
+      changed_when: false

@@ -1,0 +1,23 @@
+---
+- name: Read then converge only PLAN-owned systemd units
+  service_converge:
+    intent: "{{ deploy_scylla_vms_service_converge }}"
+  register: service_converge_apply
+  no_log: true
+  tags:
+    - inspect
+    - converge
+    - verify
+
+- name: Emit strict normalized service-converge evidence
+  ansible.builtin.debug:
+    msg: >-
+      DSV_SERVICE_CONVERGE_B64={{
+        service_converge_apply.result
+        | to_json
+        | b64encode
+      }}
+  changed_when: service_converge_apply.changed
+  tags:
+    - always
+    - verify

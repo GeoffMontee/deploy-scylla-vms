@@ -1,0 +1,101 @@
+---
+- name: Collect bounded OS-upgrade preflight evidence
+  block:
+    - name: Inspect package, lock, reboot, kernel, and space gates
+      os_upgrade_preflight:
+        payload: "{{ deploy_scylla_vms_os_upgrade_preflight }}"
+        timeout_seconds: 15
+      register: os_upgrade_preflight_inspect
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Retain strict read-only OS-upgrade preflight result
+      ansible.builtin.set_fact:
+        os_upgrade_preflight_result:
+          "{{ os_upgrade_preflight_inspect.result }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed OS-upgrade preflight
+      ansible.builtin.set_fact:
+        os_upgrade_preflight_result:
+          schema_version: deploy-scylla-vms.ansible-os-upgrade-preflight/v1
+          status: failed
+          logical_id:
+            "{{ deploy_scylla_vms_os_upgrade_preflight.logical_id }}"
+          role: "{{ deploy_scylla_vms_os_upgrade_preflight.role }}"
+          transition_classification: >-
+            {{
+              deploy_scylla_vms_os_upgrade_preflight
+              .transition_classification
+            }}
+          requested_strategy: >-
+            {{ deploy_scylla_vms_os_upgrade_preflight.requested_strategy }}
+          selected_path: not-performed
+          current_operating_system: >-
+            {{
+              deploy_scylla_vms_os_upgrade_preflight
+              .current_operating_system
+            }}
+          current_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_preflight
+              .current_operating_system_version
+            }}
+          target_operating_system: >-
+            {{
+              deploy_scylla_vms_os_upgrade_preflight
+              .target_operating_system
+            }}
+          target_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_preflight
+              .target_operating_system_version
+            }}
+          architecture:
+            "{{ deploy_scylla_vms_os_upgrade_preflight.architecture }}"
+          rolling_eligible: false
+          gates:
+            - {name: architecture, status: unknown}
+            - {name: backup-policy, status: unknown}
+            - {name: base-os, status: unknown}
+            - {name: boot-space, status: unknown}
+            - {name: broken-packages, status: unknown}
+            - {name: capacity, status: unknown}
+            - {name: current-os, status: unknown}
+            - {name: health, status: unknown}
+            - {name: kernel-family, status: unknown}
+            - {name: kernel-policy, status: unknown}
+            - {name: package-channel, status: unknown}
+            - {name: package-currency, status: unknown}
+            - {name: package-locks, status: unknown}
+            - {name: provider-image, status: unknown}
+            - {name: quorum, status: unknown}
+            - {name: reboot-required, status: unknown}
+            - {name: replication, status: unknown}
+            - {name: repository-state, status: unknown}
+            - {name: role-availability, status: unknown}
+            - {name: role-configuration, status: unknown}
+            - {name: role-package, status: unknown}
+            - {name: root-space, status: unknown}
+            - {name: route, status: unknown}
+            - {name: service, status: unknown}
+            - {name: storage, status: unknown}
+            - {name: topology-work, status: unknown}
+            - {name: transition, status: unknown}
+          not_performed:
+            "{{ deploy_scylla_vms_os_upgrade_preflight.not_performed }}"
+          provenance:
+            "{{ deploy_scylla_vms_os_upgrade_preflight.provenance }}"
+          blockers:
+            - execution-failed
+      changed_when: false
+      no_log: true
+      tags:
+        - verify

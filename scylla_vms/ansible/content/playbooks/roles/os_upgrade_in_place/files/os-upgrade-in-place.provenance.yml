@@ -1,0 +1,27 @@
+---
+schema_version: deploy-scylla-vms.ansible-source-provenance/v1
+artifact: os-upgrade-in-place-validation
+retrieved_at: "2026-09-18"
+baseline:
+  operating_system: Ubuntu
+  operating_system_version: "24.04"
+  scylladb_release: "2026.2"
+references:
+  - https://docs.scylladb.com/manual/stable/operating-scylla/
+  - https://docs.scylladb.com/manual/stable/upgrade/
+  - https://github.com/scylladb/scylla-ansible-roles
+review:
+  target_transition_approved: false
+  package_sequence_approved: false
+  shutdown_sequence_approved: false
+  reboot_sequence_approved: false
+  unconditional_blocker: target-transition-unapproved
+  scylla_blocker: shutdown-sequence-unreviewed
+  source_available_meaning: >-
+    The packaged source implements only strict request validation and blocked
+    not-performed evidence. It does not implement or authorize an OS upgrade.
+  boundary: >-
+    Never run apt update, apt upgrade, apt full-upgrade, do-release-upgrade,
+    modify package sources or kernels, stop/start/unmask services, drain
+    ScyllaDB, reboot, write configuration, retry automatically, or mutate
+    Terraform, storage, virtual machines, or cloud infrastructure.

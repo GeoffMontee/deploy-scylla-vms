@@ -1,0 +1,17 @@
+cluster_name: {{ deploy_scylla_vms_scylla_configure.config.cluster_name | to_json }}
+listen_address: {{ deploy_scylla_vms_scylla_configure.config.listen_address }}
+broadcast_address: {{ deploy_scylla_vms_scylla_configure.config.broadcast_address }}
+rpc_address: {{ deploy_scylla_vms_scylla_configure.config.rpc_address }}
+broadcast_rpc_address: {{ deploy_scylla_vms_scylla_configure.config.broadcast_rpc_address }}
+seed_provider:
+  - class_name: org.apache.cassandra.locator.SimpleSeedProvider
+    parameters:
+      - seeds: {{ deploy_scylla_vms_scylla_configure.config.seed_provider[0].parameters[0].seeds | to_json }}
+data_file_directories:
+  - {{ deploy_scylla_vms_scylla_configure.config.data_file_directories[0] }}
+commitlog_directory: {{ deploy_scylla_vms_scylla_configure.config.commitlog_directory }}
+hints_directory: {{ deploy_scylla_vms_scylla_configure.config.hints_directory }}
+view_hints_directory: {{ deploy_scylla_vms_scylla_configure.config.view_hints_directory }}
+api_address: {{ deploy_scylla_vms_scylla_configure.config.api_address }}
+prometheus_address: {{ deploy_scylla_vms_scylla_configure.config.prometheus_address }}
+endpoint_snitch: GossipingPropertyFileSnitch

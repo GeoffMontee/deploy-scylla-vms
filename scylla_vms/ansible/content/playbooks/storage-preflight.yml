@@ -1,0 +1,57 @@
+---
+- name: Report manifest-reconciled Scylla storage preflight
+  hosts: scylla
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 5
+  any_errors_fatal: false
+  max_fail_percentage: 100
+  check_mode: true
+  tags:
+    - storage
+    - preflight
+
+  pre_tasks:
+    - name: Validate storage preflight target and controller result
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_storage_preflight is mapping
+          - inventory_hostname in deploy_scylla_vms_storage_preflight
+          - >-
+            deploy_scylla_vms_storage_preflight[
+              inventory_hostname
+            ].logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_storage_preflight[
+              inventory_hostname
+            ].schema_version ==
+            'deploy-scylla-vms.ansible-storage-preflight/v1'
+        quiet: true
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: storage_preflight
+      tags:
+        - storage
+        - preflight
+
+  post_tasks:
+    - name: Emit bounded normalized storage preflight result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_STORAGE_PREFLIGHT_B64={{
+            storage_preflight_result | to_json | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

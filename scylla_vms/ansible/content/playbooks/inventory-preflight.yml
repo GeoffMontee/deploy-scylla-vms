@@ -1,0 +1,104 @@
+---
+- name: Validate generated inventory and operation targets
+  hosts: all
+  connection: local
+  gather_facts: false
+  become: false
+  strategy: linear
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  check_mode: true
+  tags:
+    - preflight
+  tasks:
+    - name: Validate provenance and target membership  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - ansible_check_mode
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_inventory_schema
+            == 'deploy-scylla-vms.ansible-inventory/v1'
+          - deploy_scylla_vms_record.schema_version
+            == 'deploy-scylla-vms.inventory/v1'
+          - deploy_scylla_vms_record.cluster_uuid
+            == deploy_scylla_vms_cluster_uuid
+          - deploy_scylla_vms_record.generation
+            == deploy_scylla_vms_expected_inventory_generation
+          - deploy_scylla_vms_record.inventory_digest
+            == deploy_scylla_vms_inventory_digest
+          - deploy_scylla_vms_record.source_manifest_generation
+            == deploy_scylla_vms_expected_observation_generation
+          - deploy_scylla_vms_record.source_manifest_digest
+            == deploy_scylla_vms_expected_observation_digest
+          - groups['all'] | sort
+            == deploy_scylla_vms_expected_hosts
+              | map(attribute='logical_id') | sort
+          - ansible_play_hosts_all | sort
+            == deploy_scylla_vms_operation_targets | sort
+          - deploy_scylla_vms_operation_targets | difference(groups['all'])
+            | length == 0
+        quiet: true
+      changed_when: false
+      no_log: true
+      run_once: true
+
+    - name: Validate stable identity and topology  # noqa: run-once[task]
+      ansible.builtin.assert:
+        that:
+          - item.logical_id in hostvars
+          - hostvars[item.logical_id].deploy_scylla_vms_logical_id
+            == item.logical_id
+          - hostvars[item.logical_id].deploy_scylla_vms_role == item.role
+          - hostvars[item.logical_id].deploy_scylla_vms_zone == item.zone
+          - hostvars[item.logical_id].deploy_scylla_vms_provider_id
+            == item.provider_id
+          - hostvars[item.logical_id].deploy_scylla_vms_scylla_datacenter
+            == item.scylla_datacenter
+          - hostvars[item.logical_id].deploy_scylla_vms_scylla_rack
+            == item.scylla_rack
+          - >-
+            (item.role == 'scylla'
+             and item.scylla_datacenter is string
+             and item.scylla_rack is string)
+            or
+            (item.role != 'scylla'
+             and item.scylla_datacenter is none
+             and item.scylla_rack is none)
+          - >-
+            hostvars[item.logical_id].keys()
+            | select(
+                'search',
+                '(?i)(password|passwd|passphrase|private[_-]?key|secret|token|credential|vault)'
+              )
+            | list | length == 0
+        quiet: true
+      loop: "{{ deploy_scylla_vms_expected_hosts }}"
+      loop_control:
+        label: "{{ item.logical_id }}"
+      changed_when: false
+      no_log: true
+      run_once: true
+
+    - name: Emit bounded inventory preflight result  # noqa: run-once[task]
+      ansible.builtin.debug:
+        msg: >-
+          DSV_INVENTORY_PREFLIGHT_B64={{
+            {
+              'host_count': deploy_scylla_vms_expected_hosts | length,
+              'inventory_file_digest':
+                deploy_scylla_vms_expected_inventory_file_digest,
+              'inventory_generation':
+                deploy_scylla_vms_expected_inventory_generation,
+              'observation_digest':
+                deploy_scylla_vms_expected_observation_digest,
+              'observation_generation':
+                deploy_scylla_vms_expected_observation_generation,
+              'schema_version':
+                'deploy-scylla-vms.ansible-inventory-preflight/v1',
+              'status': 'passed',
+              'target_count': deploy_scylla_vms_operation_targets | length
+            } | to_json | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      run_once: true

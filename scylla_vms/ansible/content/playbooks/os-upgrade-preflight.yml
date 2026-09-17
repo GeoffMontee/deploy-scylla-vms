@@ -1,0 +1,91 @@
+---
+- name: Validate OS-upgrade readiness without host or provider mutation
+  hosts: all
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - os-upgrade-preflight
+
+  pre_tasks:
+    - name: Validate exact target, current baseline, and read-only intent
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - >-
+            deploy_scylla_vms_role in
+            ['scylla', 'manager', 'monitoring', 'jump-host']
+          - deploy_scylla_vms_os_upgrade_preflight is mapping
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.schema_version ==
+            'deploy-scylla-vms.ansible-os-upgrade-preflight/v1'
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.role ==
+            deploy_scylla_vms_role
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.current_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight
+            .current_operating_system_version == '24.04'
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.selected_path ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.intent.max_unavailable == 1
+          - >-
+            deploy_scylla_vms_os_upgrade_preflight.intent
+            .no_competing_operation is sameas true
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - ansible_facts.system == 'Linux'
+          - >-
+            ansible_facts.architecture ==
+            deploy_scylla_vms_os_upgrade_preflight.guest_architecture
+        fail_msg: >-
+          OS-upgrade preflight requires one exact current Ubuntu 24.04 stable
+          ID, matching architecture, complete host-key checking, and
+          digest-bound read-only intent.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: os_upgrade_preflight
+      tags:
+        - os-upgrade-preflight
+
+  post_tasks:
+    - name: Emit strict normalized OS-upgrade preflight evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_OS_UPGRADE_PREFLIGHT_B64={{
+            os_upgrade_preflight_result | to_json | b64encode
+          }}
+      when: os_upgrade_preflight_result is defined
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after preserving failed preflight evidence
+      ansible.builtin.fail:
+        msg: >-
+          OS-upgrade preflight could not establish bounded host evidence.
+          Preserve the host and rerun only after reconciliation.
+      when: >-
+        os_upgrade_preflight_result is defined
+        and os_upgrade_preflight_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

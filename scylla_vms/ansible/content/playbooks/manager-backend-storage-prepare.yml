@@ -1,0 +1,9 @@
+---
+- name: Prepare exact Manager-local backend storage
+  hosts: manager
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  serial: 1
+  roles:
+    - role: manager_backend_storage_prepare

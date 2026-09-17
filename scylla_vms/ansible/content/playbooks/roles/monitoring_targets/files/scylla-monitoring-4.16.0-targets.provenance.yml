@@ -1,0 +1,58 @@
+---
+schema_version: deploy-scylla-vms.monitoring-targets-provenance/v1
+artifact: scylla-monitoring-4.16.0-target-files
+retrieved_at: "2026-09-18"
+install_root: /opt/scylla-monitoring/4.16.0
+target_directory: /opt/scylla-monitoring/4.16.0/prometheus
+source_commit: fac61b89b229a69d2af2d88b7e09a6316c3924e4
+source_tag: "4.16.0"
+authentication:
+  immutable_official_sources:
+    - https://monitoring.docs.scylladb.com/branch-4.16/install/monitoring-stack.html
+    - https://monitoring.docs.scylladb.com/branch-4.16/install/start-all.html
+    - https://github.com/scylladb/scylla-monitoring/blob/4.16.0/prometheus/scylla_servers.example.yml
+    - https://github.com/scylladb/scylla-monitoring/blob/4.16.0/prometheus/scylla_manager_servers.example.yml
+    - https://github.com/scylladb/scylla-monitoring/blob/4.16.0/prometheus/prometheus.yml.template
+    - https://github.com/scylladb/scylla-monitoring/blob/4.16.0/start-all.sh
+    - https://github.com/scylladb/scylla-monitoring/blob/4.16.0/genconfig.py
+  official_stack_version: "4.16.0"
+  official_target_files:
+    scylla_servers.yml: required
+    node_exporter_servers.yml: official-reuse-of-scylla-servers
+    scylla_manager_agents.yml: official-reuse-of-scylla-servers
+    scylla_manager_servers.yml: required
+  official_default_scrape_ports:
+    scylla: 9180
+    node_exporter: 9100
+    manager_agent: 5090
+    manager: 5090
+  official_manager_server_port_in_file: 5090
+  official_scylla_file_omits_ports: true
+verification:
+  - >-
+    Official Scylla Monitoring 4.16.0 file-SD uses prometheus/scylla_servers.yml
+    with RFC1918-or-cluster IPs, cluster and dc labels, and no default scrape
+    ports. Prometheus relabel adds Scylla 9180, node_exporter 9100, and
+    manager_agent 5090.
+  - >-
+    Official docs require prometheus/scylla_manager_servers.yml even when
+    Manager is unused. When Manager exists, the documented form is
+    host:5090 without labels.
+  - >-
+    Official start-all.sh reuses scylla_servers.yml for node_exporter and
+    manager_agent unless a distinct file is supplied. This slice writes the
+    same official YAML under the documented names so default startup and
+    --target-directory both see complete files.
+  - >-
+    Official genconfig.py emits the same scylla_servers.yml schema from DC/IP
+    groups. This slice generates that schema from validated inventory
+    identities instead of nodetool status or host-side genconfig.py.
+  - >-
+    Vector-search target files are official only with an explicit vector
+    service; this baseline does not write vector_search_servers.yml.
+  - Refuse Consul manager discovery, start-all.sh, Compose, Docker, Grafana
+    auth, public bind, secrets, and live scrape claims.
+  - >-
+    Exporters and the stack remain not-started after monitoring-agent and
+    monitoring-stack. Generated files are valid, but scrape-readiness stays
+    not-performed.

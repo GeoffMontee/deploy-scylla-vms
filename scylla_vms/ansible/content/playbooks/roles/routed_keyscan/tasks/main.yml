@@ -1,0 +1,19 @@
+---
+- name: Collect private-host SSH key candidates without granting trust
+  routed_keyscan:
+    request: "{{ deploy_scylla_vms_routed_keyscan }}"
+  register: routed_keyscan_scan
+  check_mode: false
+  changed_when: false
+  no_log: true
+  tags:
+    - collect
+    - verify
+
+- name: Retain only the strict address-free candidate result
+  ansible.builtin.set_fact:
+    routed_keyscan_result: "{{ routed_keyscan_scan.result }}"
+  changed_when: false
+  no_log: true
+  tags:
+    - verify

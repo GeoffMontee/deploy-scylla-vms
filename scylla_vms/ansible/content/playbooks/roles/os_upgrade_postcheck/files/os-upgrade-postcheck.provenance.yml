@@ -1,0 +1,34 @@
+---
+schema_version: deploy-scylla-vms.ansible-source-provenance/v1
+artifact: os-upgrade-postcheck-verification
+retrieved_at: "2026-09-18"
+baseline:
+  operating_system: Ubuntu
+  operating_system_version: "24.04"
+  scylladb_release: "2026.2"
+references:
+  - https://ubuntu.com/server/docs/how-to/software/upgrade-your-release/index.html
+  - https://docs.scylladb.com/manual/stable/upgrade/
+  - https://docs.scylladb.com/manual/stable/operating-scylla/
+  - https://docs.scylladb.com/stable/versioning/os-support-per-version.html
+review:
+  target_transition_approved: false
+  successful_in_place_source_available: false
+  successful_reprovision_source_available: false
+  unconditional_blocker: source-upgrade-not-performed
+  source_available_meaning: >-
+    The packaged source implements strict read-only verification and refusal.
+    No currently packaged source can prove a completed OS upgrade or
+    reprovision, so every current postcheck remains blocked and must not advance
+    a rolling operation.
+  bounded_verification: >-
+    Compare fixed OS-release, architecture, kernel-policy digest, dpkg audit,
+    exact role package versions, reboot-required state, fixed service policy,
+    current provider identity, route/configuration/storage evidence, and
+    role-specific health without retaining raw output.
+  boundary: >-
+    Never run apt mutation, package installation/removal, reboot, service
+    start/stop/unmask, configuration or storage writes, host-trust replacement,
+    provider or Terraform calls, automatic remediation, or Scylla topology
+    mutation. Complete Scylla topology, schema, streaming, and storage health
+    must come from current strict read-only evidence, not process status alone.

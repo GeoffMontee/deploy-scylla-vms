@@ -1,0 +1,134 @@
+---
+- name: Remove one dead ScyllaDB Host ID from a healthy coordinator
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-remove-dead
+
+  pre_tasks:
+    - name: Emit truthful check-mode refusal
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_REMOVE_DEAD_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-remove-dead/v1',
+              'status': 'not-predicted',
+              'target_stable_id':
+                deploy_scylla_vms_scylla_remove_dead.target.stable_id,
+              'coordinator_stable_id': inventory_hostname,
+              'target_host_id_digest':
+                'sha256:' + (
+                  deploy_scylla_vms_scylla_remove_dead.target.host_id
+                  | hash('sha256')
+                ),
+              'coordinator_host_id_digest':
+                'sha256:' + (
+                  deploy_scylla_vms_scylla_remove_dead.coordinator.host_id
+                  | hash('sha256')
+                ),
+              'pre_evidence_digest':
+                deploy_scylla_vms_scylla_remove_dead.pre_evidence_digest,
+              'post_evidence_digest': none,
+              'removal_command': [
+                '/usr/bin/nodetool',
+                'removenode',
+                deploy_scylla_vms_scylla_remove_dead.target.host_id
+              ],
+              'status_command':
+                ['/usr/bin/nodetool', 'removenode', 'status'],
+              'command_boundary': 'not-started',
+              'mutation_boundary': 'unchanged',
+              'removal_status': 'not-performed',
+              'postconditions': {
+                'expected-topology': 'not-performed',
+                'no-streaming': 'not-performed',
+                'removal-finished': 'not-performed',
+                'schema-agreement': 'not-performed',
+                'survivors-up-normal': 'not-performed',
+                'target-absent': 'not-performed'
+              },
+              'recovery_required': false,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Hard refuse dead-node removal prediction in check mode
+      ansible.builtin.fail:
+        msg: >-
+          Scylla removenode check mode is refused because ring mutation cannot
+          be safely predicted.
+      when: ansible_check_mode
+      tags:
+        - always
+
+    - name: Validate coordinator-only destructive authorization
+      ansible.builtin.assert:
+        that:
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_logical_id == inventory_hostname
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_remove_dead is mapping
+          - >-
+            deploy_scylla_vms_scylla_remove_dead.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-remove-dead/v1'
+          - >-
+            deploy_scylla_vms_scylla_remove_dead.coordinator.stable_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_scylla_remove_dead.target.stable_id !=
+            inventory_hostname
+          - deploy_scylla_vms_scylla_remove_dead.authorization.reviewed
+          - >-
+            deploy_scylla_vms_scylla_remove_dead.required_survivor_quorum
+            | length > 0
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+        quiet: true
+        fail_msg: >-
+          Dead-node removal must run only on the exact healthy surviving
+          coordinator with reviewed digest-bound authorization.
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: scylla_remove_dead
+      tags:
+        - scylla-remove-dead
+
+  post_tasks:
+    - name: Emit strict normalized dead-removal evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_REMOVE_DEAD_B64={{
+            scylla_remove_dead_result | to_json | b64encode
+          }}
+      changed_when: >-
+        scylla_remove_dead_result.command_boundary != 'not-started'
+      tags:
+        - always
+
+    - name: Stop after preserving recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Scylla dead removal did not prove all postconditions. Do not retry
+          removenode or force completion; preserve state for recovery review.
+      when: scylla_remove_dead_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

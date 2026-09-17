@@ -1,0 +1,43 @@
+---
+- name: Collect bounded normalized local Scylla health view
+  scylla_health:
+    logical_id: "{{ inventory_hostname }}"
+    datacenter: "{{ scylla_health_expected_host[0].datacenter }}"
+    rack: "{{ scylla_health_expected_host[0].rack }}"
+    expected_hosts: "{{ deploy_scylla_vms_scylla_health.expected_hosts }}"
+    timeout_seconds: >-
+      {{ deploy_scylla_vms_scylla_health.timeout_seconds }}
+  register: scylla_health_collected
+  changed_when: false
+  no_log: true
+  tags:
+    - health
+
+- name: Emit strict normalized Scylla health evidence
+  ansible.builtin.debug:
+    msg: >-
+      DSV_SCYLLA_HEALTH_B64={{
+        scylla_health_collected.scylla_health | to_json | b64encode
+      }}
+  changed_when: false
+  tags:
+    - always
+
+- name: Fail this host when bounded health collection is incomplete
+  ansible.builtin.assert:
+    that:
+      - scylla_health_collected.scylla_health.errors | length == 0
+      - scylla_health_collected.scylla_health.service_state == 'active'
+      - scylla_health_collected.scylla_health.cql_reachable is sameas true
+      - scylla_health_collected.scylla_health.api_reachable is sameas true
+      - >-
+        scylla_health_collected.scylla_health.version ==
+        scylla_health_expected_host[0].version
+    fail_msg: >-
+      Scylla health collection found an unavailable command, service, API, or
+      CQL endpoint. See the strict redacted controller result.
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - health

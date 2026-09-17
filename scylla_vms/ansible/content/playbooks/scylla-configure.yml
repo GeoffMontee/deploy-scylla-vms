@@ -1,0 +1,154 @@
+---
+- name: Configure ScyllaDB without starting or bootstrapping it
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-configure
+
+  pre_tasks:
+    - name: Validate exact Scylla configuration intent and guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_configure is mapping
+          - >-
+            deploy_scylla_vms_scylla_configure.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-configure/v1'
+          - >-
+            deploy_scylla_vms_scylla_configure.logical_id ==
+            inventory_hostname
+          - deploy_scylla_vms_scylla_configure.release_line == '2026.2'
+          - >-
+            deploy_scylla_vms_scylla_configure.package_version
+            is match(
+              '^2026[.]2[.](0|[1-9][0-9]*)-0[.][0-9]{8}'
+              '[.][0-9a-f]{12}-1$'
+            )
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_scylla_configure.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_scylla_configure.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+          - >-
+            deploy_scylla_vms_scylla_configure.configuration_state
+            in ['initial', 'existing']
+          - >-
+            deploy_scylla_vms_scylla_configure.config.keys()
+            | list
+            | sort
+            ==
+            [
+              'api_address',
+              'broadcast_address',
+              'broadcast_rpc_address',
+              'cluster_name',
+              'commitlog_directory',
+              'data_file_directories',
+              'endpoint_snitch',
+              'hints_directory',
+              'listen_address',
+              'prometheus_address',
+              'rpc_address',
+              'seed_provider',
+              'view_hints_directory'
+            ]
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .config.endpoint_snitch == 'GossipingPropertyFileSnitch'
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .config.seed_provider[0].class_name ==
+            'org.apache.cassandra.locator.SimpleSeedProvider'
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .config.data_file_directories == ['/var/lib/scylla/data']
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .config.commitlog_directory == '/var/lib/scylla/commitlog'
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .config.hints_directory == '/var/lib/scylla/hints'
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .config.view_hints_directory == '/var/lib/scylla/view_hints'
+          - >-
+            deploy_scylla_vms_scylla_configure
+            .runtime_validation_performed is sameas false
+        fail_msg: >-
+          Scylla configuration requires current exact Ubuntu, package,
+          storage, identity, topology, address, seed, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful non-predictive check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_CONFIGURE_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-configure/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'config_digest':
+                deploy_scylla_vms_scylla_configure.config_digest,
+              'topology_digest':
+                deploy_scylla_vms_scylla_configure.topology_digest,
+              'seed_digest':
+                deploy_scylla_vms_scylla_configure.seed_digest,
+              'configuration_file_digests': {},
+              'files_root_owned': none,
+              'files_mode_0644': none,
+              'installed_version': none,
+              'service_masked': none,
+              'service_inactive': none,
+              'runtime_validation_performed': false,
+              'package_install_performed': false,
+              'storage_mutation_performed': false,
+              'tuning_performed': false,
+              'firewall_operation_performed': false,
+              'ssh_operation_performed': false,
+              'manager_operation_performed': false,
+              'service_started': false,
+              'bootstrap_performed': false,
+              'prerequisite_digests':
+                deploy_scylla_vms_scylla_configure.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  roles:
+    - role: scylla_configure
+      when: not ansible_check_mode
+      tags:
+        - scylla-configure

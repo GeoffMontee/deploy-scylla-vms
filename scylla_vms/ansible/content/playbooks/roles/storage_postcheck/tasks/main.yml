@@ -1,0 +1,17 @@
+---
+- name: Rediscover and verify exact prepared storage without mutation
+  storage_postcheck:
+    expected: "{{ deploy_scylla_vms_storage_postcheck }}"
+  register: storage_postcheck_module
+  changed_when: false
+  failed_when: false
+  check_mode: true
+  no_log: true
+
+- name: Retain only bounded storage postcheck evidence
+  ansible.builtin.set_fact:
+    storage_postcheck_result: >-
+      {{ storage_postcheck_module.storage_postcheck_result }}
+  changed_when: false
+  check_mode: true
+  no_log: true

@@ -1,0 +1,15 @@
+---
+- name: Revalidate and prepare only the authorized exact device set
+  storage_prepare:
+    intent: "{{ deploy_scylla_vms_storage_prepare }}"
+  register: storage_prepare_module
+  changed_when: storage_prepare_module.changed | bool
+  failed_when: false
+  no_log: true
+
+- name: Retain only bounded storage preparation evidence
+  ansible.builtin.set_fact:
+    storage_prepare_result: >-
+      {{ storage_prepare_module.storage_prepare_result }}
+  changed_when: false
+  no_log: true

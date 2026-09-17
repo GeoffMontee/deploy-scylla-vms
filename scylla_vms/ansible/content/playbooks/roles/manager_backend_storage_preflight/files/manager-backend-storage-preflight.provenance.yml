@@ -1,0 +1,35 @@
+---
+schema_version: >-
+  deploy-scylla-vms.ansible-manager-backend-storage-preflight-provenance/v1
+recorded_at: "2026-09-23"
+scope:
+  target_role: manager
+  backend: block-volume
+  layout: single
+  device_count: 1
+  filesystem: xfs
+  mount_boundary: /var/lib/scylla
+  operation_classification: read-only
+decisions:
+  - Match only non-path guest identities from the exact Terraform manifest.
+  - Require desired, observed, and guest device size policy conformance.
+  - Keep operational capacity sufficiency explicitly unknown.
+  - Forbid root or boot fallback, local NVMe, RAID, and shared Scylla storage.
+  - >-
+    Bind one whole-device XFS, fstab, mount, and one-node ownership-marker
+    intent.
+  - Classify only owned-noop, prepare-required, or blocked.
+  - Treat blank unowned exact storage as preparation without wipe.
+  - >-
+    Block foreign signatures while reporting a separate future wipe
+    requirement.
+  - Reject foreign ownership and unexpected mounts, holders, or topology.
+  - Hash device-set, preparation-intent, blocker, and provenance evidence.
+  - >-
+    Never write, wipe, partition, create RAID or filesystems, mount, or edit
+    fstab.
+  - Never tune, run setup, access CQL, configure Manager, or mutate services.
+reused_contracts:
+  - deploy-scylla-vms.storage-manifest/v1
+  - deploy-scylla-vms.ansible-manager-backend-storage-discovery/v1
+  - deploy-scylla-vms.manager-backend-local-one-node-policy/v1

@@ -1,0 +1,71 @@
+---
+- name: Collect bounded Manager backend preflight evidence
+  block:
+    - name: Inspect fixed local package service capacity and loopback gates
+      manager_backend_preflight:
+        payload: "{{ deploy_scylla_vms_manager_backend_preflight }}"
+        timeout_seconds: 15
+      register: manager_backend_preflight_inspect
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Retain strict read-only Manager backend preflight result
+      ansible.builtin.set_fact:
+        manager_backend_preflight_result:
+          "{{ manager_backend_preflight_inspect.result }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed Manager backend preflight
+      ansible.builtin.set_fact:
+        manager_backend_preflight_result:
+          schema_version: >-
+            deploy-scylla-vms.ansible-manager-backend-preflight/v1
+          logical_id: >-
+            {{ deploy_scylla_vms_manager_backend_preflight.logical_id }}
+          role: manager
+          status: failed
+          backend_mode: local-one-node
+          scylla_release: "2026.2"
+          operating_system: Ubuntu
+          operating_system_version: "24.04"
+          architecture: >-
+            {{ deploy_scylla_vms_manager_backend_preflight.architecture }}
+          capacity:
+            cpu_count: null
+            memory_bytes: null
+            root_total_bytes: null
+            root_free_bytes: null
+            approved_mount_count: null
+            available_mount_count: null
+          manager_package_status: unknown
+          local_scylla_package_status: unknown
+          package_availability_status: not-performed
+          manager_service_status: unknown
+          local_scylla_service_status: unknown
+          reboot_required: null
+          loopback_policy_status: unknown
+          configuration_status: not-inspected
+          schema_status: not-inspected
+          operational_readiness: not-performed
+          not_performed: >-
+            {{ deploy_scylla_vms_manager_backend_preflight.not_performed }}
+          provenance: >-
+            {{ deploy_scylla_vms_manager_backend_preflight.provenance }}
+          blockers: >-
+            {{
+              (
+                deploy_scylla_vms_manager_backend_preflight
+                .unresolved_blockers + ['execution-failed']
+              ) | sort
+            }}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify

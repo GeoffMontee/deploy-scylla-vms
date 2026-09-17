@@ -1,0 +1,81 @@
+---
+- name: Preflight exact Manager backend storage without mutation
+  hosts: manager
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - manager-backend-storage-preflight
+
+  pre_tasks:
+    - name: Validate exact Manager storage preflight scope
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'manager'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_manager_backend_storage_preflight is mapping
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight
+            .schema_version ==
+            'deploy-scylla-vms.ansible-manager-backend-storage-preflight/v1'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight.stable_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight.role ==
+            'manager'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight.backend ==
+            'block-volume'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight.layout ==
+            'single'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight.filesystem ==
+            'xfs'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_preflight
+            .expected_device_count == 1
+        fail_msg: >-
+          Manager backend storage preflight requires one exact trusted Manager
+          target and the immutable dedicated-storage plan.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: manager_backend_storage_preflight
+      tags:
+        - manager-backend-storage-preflight
+
+  post_tasks:
+    - name: Emit strict normalized Manager storage preflight evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_BACKEND_STORAGE_PREFLIGHT_B64={{
+            manager_backend_storage_preflight_result | to_json | b64encode
+          }}
+      when: manager_backend_storage_preflight_result is defined
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after preserving failed Manager storage preflight evidence
+      ansible.builtin.fail:
+        msg: >-
+          Manager backend storage preflight could not establish bounded
+          evidence. Preserve the host and reconcile before any later action.
+      when: >-
+        manager_backend_storage_preflight_result is defined
+        and manager_backend_storage_preflight_result.blockers ==
+        ['preflight-failed']
+      no_log: true
+      tags:
+        - always

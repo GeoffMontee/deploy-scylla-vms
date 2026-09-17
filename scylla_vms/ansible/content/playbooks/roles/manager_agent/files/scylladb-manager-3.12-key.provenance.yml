@@ -1,0 +1,46 @@
+---
+schema_version: deploy-scylla-vms.manager-signing-key-provenance/v1
+artifact: scylladb-2026.asc
+retrieved_at: "2026-09-18"
+signing_key_resource: >-
+  content/playbooks/roles/scylla_install/files/scylladb-2026.asc
+sha256: f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417
+openpgp:
+  version: 4
+  algorithm: RSA
+  bits: 4096
+  fingerprint: 6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+  key_id: C503C686B007F39E
+  uid: ScyllaDB Package Signing Key 2026 <security@scylladb.com>
+  revoked: false
+  signing_subkey_fingerprint: EBE8C9A0BA8865F8CCA4CD4DB99CC295DFCEA1A8
+authentication:
+  immutable_official_sources:
+    - https://manager.docs.scylladb.com/stable/compatibility-matrix.html
+    - https://manager.docs.scylladb.com/stable/install-scylla-manager-agent.html
+    - https://manager.docs.scylladb.com/stable/install-scylla-manager.html
+  official_repository_definition: >-
+    https://downloads.scylladb.com/deb/ubuntu/scylladb-manager-3.12.list
+  official_repository_definition_sha256: >-
+    2881539376759137cde48cc4383c12c266b500c8b022572adffa91dd4e3f6ec1
+  signed_inrelease: >-
+    https://downloads.scylladb.com/downloads/scylla-manager/deb/ubuntu/scylladb-manager-3.12/dists/stable/InRelease
+  observed_inrelease_sha256: >-
+    f58ab5cc310024e5bcb4ba99dcb8a51b8e845de686213697a0f1456e90d9c6ea
+  inrelease_signature_issuer_fingerprint: >-
+    6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+  documented_short_key_id_not_used: A43E06657BAC99E3
+verification:
+  - >-
+    Official current Manager 3.12 is the ScyllaDB 2026.2 compatible release
+    line on the stable compatibility matrix.
+  - Retrieve the official Ubuntu and Debian Manager 3.12 repository lists.
+  - Require both lists to contain the same Ubuntu Manager 3.12 URI.
+  - >-
+    Verify the official InRelease signature issuer fingerprint instead of
+    inventing a key or trusting the older short key ID still shown in the
+    install pages.
+  - Reuse the already-authenticated vendored 2026 public key.
+  - Refuse host-side keyserver or HTTPS key download.
+  - Require the exact SHA-256 digest recorded above.
+  - Refuse any key-revocation or certification-revocation packet.

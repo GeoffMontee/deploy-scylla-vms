@@ -1,0 +1,351 @@
+---
+- name: Generate official Scylla Monitoring 4.16.0 target files without startup
+  hosts: monitoring
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - monitoring-targets
+
+  pre_tasks:
+    - name: Validate exact monitoring-targets intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'monitoring'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_monitoring_targets is mapping
+          - >-
+            deploy_scylla_vms_monitoring_targets.schema_version ==
+            'deploy-scylla-vms.ansible-monitoring-targets/v1'
+          - >-
+            deploy_scylla_vms_monitoring_targets.logical_id ==
+            inventory_hostname
+          - deploy_scylla_vms_monitoring_targets.release_line == '4.16'
+          - deploy_scylla_vms_monitoring_targets.stack_version == '4.16.0'
+          - >-
+            deploy_scylla_vms_monitoring_targets.listen_policy ==
+            'not-started'
+          - >-
+            deploy_scylla_vms_monitoring_targets.scrape_readiness ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_monitoring_targets.service_unit ==
+            'docker.service'
+          - >-
+            deploy_scylla_vms_monitoring_targets.install_root ==
+            '/opt/scylla-monitoring/4.16.0'
+          - >-
+            deploy_scylla_vms_monitoring_targets.target_directory ==
+            '/opt/scylla-monitoring/4.16.0/prometheus'
+          - >-
+            deploy_scylla_vms_monitoring_targets.source_commit ==
+            'fac61b89b229a69d2af2d88b7e09a6316c3924e4'
+          - >-
+            deploy_scylla_vms_monitoring_targets.documented_scrape_ports ==
+            {
+              'manager': 5090,
+              'manager_agent': 5090,
+              'node_exporter': 9100,
+              'scylla': 9180
+            }
+          - >-
+            deploy_scylla_vms_monitoring_targets.auth_configured
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.compose_generated
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.containers_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.exporters_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets
+            .manager_registration_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.public_bind
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.scrape_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.scylla_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.secrets_written
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_targets.stack_started
+            is sameas false
+          - deploy_scylla_vms_monitoring_targets.files | length == 4
+          - deploy_scylla_vms_monitoring_targets.file_digests | length == 4
+          - >-
+            deploy_scylla_vms_monitoring_targets.files[0].name ==
+            'scylla_servers.yml'
+          - >-
+            deploy_scylla_vms_monitoring_targets.files[1].name ==
+            'node_exporter_servers.yml'
+          - >-
+            deploy_scylla_vms_monitoring_targets.files[2].name ==
+            'scylla_manager_agents.yml'
+          - >-
+            deploy_scylla_vms_monitoring_targets.files[3].name ==
+            'scylla_manager_servers.yml'
+          - >-
+            deploy_scylla_vms_monitoring_targets.image_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_monitoring_targets
+            .image_operating_system_version ==
+            '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_monitoring_targets.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_monitoring_targets.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+        fail_msg: >-
+          Monitoring target generation requires current exact Ubuntu 24.04,
+          architecture, monitoring identity, stack, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MONITORING_TARGETS_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-monitoring-targets/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'stack_version':
+                deploy_scylla_vms_monitoring_targets.stack_version,
+              'install_root':
+                deploy_scylla_vms_monitoring_targets.install_root,
+              'files': {},
+              'target_counts':
+                deploy_scylla_vms_monitoring_targets.target_counts,
+              'identities':
+                deploy_scylla_vms_monitoring_targets.identities,
+              'documented_scrape_ports':
+                deploy_scylla_vms_monitoring_targets.documented_scrape_ports,
+              'listen_policy': 'not-started',
+              'scrape_readiness': 'not-performed',
+              'scrape_performed': false,
+              'exporters_started': false,
+              'stack_started': false,
+              'containers_started': false,
+              'auth_configured': false,
+              'public_bind': false,
+              'manager_registration_performed': false,
+              'scylla_started': false,
+              'secrets_written': false,
+              'compose_generated': false,
+              'provenance':
+                deploy_scylla_vms_monitoring_targets.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  tasks:
+    - name: Read the installed official versions file
+      ansible.builtin.slurp:
+        src: >-
+          {{ deploy_scylla_vms_monitoring_targets.install_root }}/versions.sh
+      register: monitoring_targets_versions
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Verify the pinned stack remains the official 4.16.0 archive
+      ansible.builtin.assert:
+        that:
+          - >-
+            'PROMETHEUS_VERSION=v3.14.0'
+            in (monitoring_targets_versions.content | b64decode)
+          - >-
+            'GRAFANA_VERSION=13.2.0'
+            in (monitoring_targets_versions.content | b64decode)
+          - >-
+            'ALERT_MANAGER_VERSION=v0.34.0'
+            in (monitoring_targets_versions.content | b64decode)
+          - >-
+            'LOKI_VERSION=3.7.7'
+            in (monitoring_targets_versions.content | b64decode)
+          - >-
+            'PROMTAIL_VERSION=3.6.11'
+            in (monitoring_targets_versions.content | b64decode)
+          - >-
+            '2026.2'
+            in (monitoring_targets_versions.content | b64decode)
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect docker enablement without installing or starting it
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-enabled
+          - docker.service
+      register: monitoring_targets_service_enabled
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect docker activity without installing or starting it
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - docker.service
+      register: monitoring_targets_service_active
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Refuse docker startup, enablement, or container launch
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_targets_service_enabled.stdout
+            not in ['enabled', 'enabled-runtime']
+          - >-
+            monitoring_targets_service_active.stdout
+            not in ['active', 'activating', 'deactivating', 'reloading']
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Write official Prometheus target files without starting scrape
+      ansible.builtin.copy:
+        dest: "{{ item.path }}"
+        content: "{{ item.content }}"
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ deploy_scylla_vms_monitoring_targets.files }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: monitoring_targets_written
+      no_log: true
+      tags:
+        - targets
+
+    - name: Read written target-file checksums
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+        checksum_algorithm: sha256
+        get_checksum: true
+      loop: "{{ deploy_scylla_vms_monitoring_targets.files }}"
+      loop_control:
+        label: "{{ item.name }}"
+      register: monitoring_targets_stat
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Refuse target-file digest mismatch
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+          - item.stat.isreg
+          - ('sha256:' ~ item.stat.checksum) == item.item.digest
+        quiet: true
+      loop: "{{ monitoring_targets_stat.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized monitoring-targets evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MONITORING_TARGETS_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-monitoring-targets/v1',
+              'logical_id': inventory_hostname,
+              'status': (
+                'generated'
+                if monitoring_targets_written.changed
+                else 'no-change'
+              ),
+              'stack_version':
+                deploy_scylla_vms_monitoring_targets.stack_version,
+              'install_root':
+                deploy_scylla_vms_monitoring_targets.install_root,
+              'files':
+                deploy_scylla_vms_monitoring_targets.file_digests,
+              'target_counts':
+                deploy_scylla_vms_monitoring_targets.target_counts,
+              'identities':
+                deploy_scylla_vms_monitoring_targets.identities,
+              'documented_scrape_ports':
+                deploy_scylla_vms_monitoring_targets.documented_scrape_ports,
+              'listen_policy': 'not-started',
+              'scrape_readiness': 'not-performed',
+              'scrape_performed': false,
+              'exporters_started': false,
+              'stack_started': false,
+              'containers_started': false,
+              'auth_configured': false,
+              'public_bind': false,
+              'manager_registration_performed': false,
+              'scylla_started': false,
+              'secrets_written': false,
+              'compose_generated': false,
+              'provenance':
+                deploy_scylla_vms_monitoring_targets.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

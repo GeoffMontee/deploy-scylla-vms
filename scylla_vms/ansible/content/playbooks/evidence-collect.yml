@@ -1,0 +1,387 @@
+---
+- name: Collect bounded allowlisted diagnostic evidence
+  hosts: all
+  gather_facts: false
+  become: false
+  strategy: linear
+  serial: 5
+  any_errors_fatal: false
+  max_fail_percentage: 100
+  check_mode: true
+  tags:
+    - evidence
+  vars:
+    deploy_scylla_vms_effective_evidence_timeout_seconds: >-
+      {{ deploy_scylla_vms_evidence_timeout_seconds | default(10) }}
+  tasks:
+    - name: Validate evidence target identity
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - >-
+            deploy_scylla_vms_role
+            in ['jump-host', 'manager', 'monitoring', 'scylla']
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+        quiet: true
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Collect bounded system facts
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - distribution
+          - hardware
+          - date_time
+        gather_timeout: >-
+          {{ deploy_scylla_vms_effective_evidence_timeout_seconds }}
+        filter:
+          - ansible_architecture
+          - ansible_date_time
+          - ansible_devices
+          - ansible_distribution
+          - ansible_distribution_version
+          - ansible_kernel
+          - ansible_memtotal_mb
+          - ansible_mounts
+          - ansible_uptime_seconds
+          - ansible_processor_vcpus
+      register: deploy_scylla_vms_system_facts
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Collect bounded service facts
+      ansible.builtin.service_facts:
+      register: deploy_scylla_vms_service_facts
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Select fixed version executable
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_version_executable: >-
+          {{
+            {
+              'scylla': '/usr/bin/scylla',
+              'manager': '/usr/bin/scylla-manager',
+              'monitoring': '/usr/bin/prometheus'
+            }.get(deploy_scylla_vms_role)
+          }}
+      changed_when: false
+      no_log: true
+
+    - name: Inspect fixed version executable
+      ansible.builtin.stat:
+        path: "{{ deploy_scylla_vms_version_executable }}"
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+      register: deploy_scylla_vms_version_stat
+      when: deploy_scylla_vms_version_executable is string
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Inspect fixed command timeout executable
+      ansible.builtin.stat:
+        path: /usr/bin/timeout
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+      register: deploy_scylla_vms_timeout_stat
+      when: deploy_scylla_vms_version_executable is string
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Collect selected service version
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - >-
+            {{
+              deploy_scylla_vms_effective_evidence_timeout_seconds
+              | string
+            }}
+          - "{{ deploy_scylla_vms_version_executable }}"
+          - "--version"
+      register: deploy_scylla_vms_version_result
+      when:
+        - deploy_scylla_vms_version_executable is string
+        - deploy_scylla_vms_version_stat.stat.exists | default(false)
+        - deploy_scylla_vms_version_stat.stat.isreg | default(false)
+        - deploy_scylla_vms_timeout_stat.stat.exists | default(false)
+        - deploy_scylla_vms_timeout_stat.stat.isreg | default(false)
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Inspect bounded Scylla health executables
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+      loop:
+        - /usr/bin/nodetool
+        - /usr/bin/timeout
+      loop_control:
+        label: "{{ item }}"
+      register: deploy_scylla_vms_health_stats
+      when: deploy_scylla_vms_role == 'scylla'
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Collect bounded Scylla health result
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/timeout
+          - >-
+            {{
+              deploy_scylla_vms_effective_evidence_timeout_seconds
+              | string
+            }}
+          - /usr/bin/nodetool
+          - status
+      register: deploy_scylla_vms_health_result
+      when:
+        - deploy_scylla_vms_role == 'scylla'
+        - >-
+          deploy_scylla_vms_health_stats.results
+          | selectattr('stat.exists', 'defined')
+          | selectattr('stat.exists', 'equalto', true)
+          | list | length == 2
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Build approved filesystem evidence
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_filesystem_evidence: >-
+          {{
+            (deploy_scylla_vms_filesystem_evidence | default([]))
+            + [{
+              'mount': item.mount,
+              'total_bytes': item.size_total,
+              'available_bytes': item.size_available,
+              'used_percent': (
+                (
+                  (item.size_total - item.size_available)
+                  * 100 / item.size_total
+                ) | round(2)
+                if item.size_total | int > 0
+                else none
+              )
+            }]
+          }}
+      loop: >-
+        {{
+          ansible_facts.mounts | default([])
+          | selectattr(
+              'mount',
+              'in',
+              [
+                '/',
+                '/var/lib/scylla',
+                '/var/lib/scylla-manager',
+                '/var/lib/prometheus',
+                '/var/lib/grafana'
+              ]
+            )
+          | sort(attribute='mount')
+          | list
+        }}
+      loop_control:
+        label: "{{ item.mount }}"
+      changed_when: false
+      no_log: true
+
+    - name: Build redacted block-device evidence
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_block_evidence: >-
+          {{
+            (deploy_scylla_vms_block_evidence | default([]))
+            + [{
+              'name': item.key,
+              'size': item.value.size | default(none),
+              'rotational': item.value.rotational | default(none)
+            }]
+          }}
+      loop: >-
+        {{
+          ansible_facts.devices | default({})
+          | dict2items | sort(attribute='key')
+        }}
+      loop_control:
+        label: "{{ item.key }}"
+      changed_when: false
+      no_log: true
+
+    - name: Build allowlisted service evidence
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_selected_services: >-
+          {{
+            (deploy_scylla_vms_selected_services | default([]))
+            + [{
+              'name': item,
+              'status': (
+                ansible_facts.services[item].state
+                if item in (ansible_facts.services | default({}))
+                else 'unavailable'
+              )
+            }]
+          }}
+      loop: >-
+        {{
+          {
+            'jump-host': [],
+            'manager': ['scylla-manager.service'],
+            'monitoring': ['grafana-server.service', 'prometheus.service'],
+            'scylla': ['scylla-server.service']
+          }[deploy_scylla_vms_role]
+        }}
+      loop_control:
+        label: "{{ item }}"
+      changed_when: false
+      no_log: true
+
+    - name: Build allowlisted host evidence
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_host_evidence:
+          schema_version: deploy-scylla-vms.ansible-host-evidence/v1
+          logical_id: "{{ deploy_scylla_vms_logical_id }}"
+          role: "{{ deploy_scylla_vms_role }}"
+          status: >-
+            {{
+              'complete'
+              if not (
+                deploy_scylla_vms_system_facts.failed | default(false)
+                or deploy_scylla_vms_service_facts.failed | default(false)
+                or deploy_scylla_vms_service_facts.skipped | default(false)
+              )
+              else 'partial'
+            }}
+          system:
+            os_name: "{{ ansible_facts.distribution | default(none) }}"
+            os_version: >-
+              {{ ansible_facts.distribution_version | default(none) }}
+            architecture: "{{ ansible_facts.architecture | default(none) }}"
+            kernel: "{{ ansible_facts.kernel | default(none) }}"
+            current_time: >-
+              {{ ansible_facts.date_time.iso8601 | default(none) }}
+            uptime_seconds: >-
+              {{ ansible_facts.uptime_seconds | default(none) }}
+            cpu_count: "{{ ansible_facts.processor_vcpus | default(none) }}"
+            memory_mib: "{{ ansible_facts.memtotal_mb | default(none) }}"
+          filesystems:
+            status: >-
+              {{
+                'available'
+                if (
+                  deploy_scylla_vms_filesystem_evidence
+                  | default([]) | length > 0
+                )
+                else 'unavailable'
+              }}
+            items: >-
+              {{ deploy_scylla_vms_filesystem_evidence | default([]) }}
+          block_devices:
+            status: >-
+              {{
+                'available'
+                if (
+                  deploy_scylla_vms_block_evidence
+                  | default([]) | length > 0
+                )
+                else 'unavailable'
+              }}
+            items: "{{ deploy_scylla_vms_block_evidence | default([]) }}"
+          services: "{{ deploy_scylla_vms_selected_services | default([]) }}"
+          service_version:
+            status: >-
+              {{
+                'not-performed'
+                if deploy_scylla_vms_version_executable is not string
+                else 'available'
+                if (
+                  deploy_scylla_vms_version_result.rc | default(1) == 0
+                  and deploy_scylla_vms_version_result.stdout_lines
+                    | default([]) | length > 0
+                  and deploy_scylla_vms_version_result.stdout_lines[0]
+                    | length <= 256
+                )
+                else 'unavailable'
+              }}
+            value: >-
+              {{
+                deploy_scylla_vms_version_result.stdout_lines[0]
+                | trim
+                if (
+                  deploy_scylla_vms_version_result.rc | default(1) == 0
+                  and deploy_scylla_vms_version_result.stdout_lines
+                    | default([]) | length > 0
+                  and deploy_scylla_vms_version_result.stdout_lines[0]
+                    | length <= 256
+                )
+                else none
+              }}
+          scylla_health:
+            status: >-
+              {{
+                'passed'
+                if (
+                  deploy_scylla_vms_role == 'scylla'
+                  and deploy_scylla_vms_health_result.rc | default(1) == 0
+                )
+                else 'failed'
+                if (
+                  deploy_scylla_vms_role == 'scylla'
+                  and deploy_scylla_vms_health_result.rc is defined
+                )
+                else 'unavailable'
+                if deploy_scylla_vms_role == 'scylla'
+                else 'not-performed'
+              }}
+          errors: >-
+            {{
+              []
+              + (
+                ['system-facts-unavailable']
+                if deploy_scylla_vms_system_facts.failed | default(false)
+                else []
+              )
+              + (
+                ['service-facts-unavailable']
+                if (
+                  deploy_scylla_vms_service_facts.failed | default(false)
+                  or deploy_scylla_vms_service_facts.skipped | default(false)
+                )
+                else []
+              )
+            }}
+      changed_when: false
+      no_log: true
+
+    - name: Emit allowlisted encoded host evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_EVIDENCE_B64={{
+            deploy_scylla_vms_host_evidence
+            | to_json
+            | b64encode
+          }}
+      changed_when: false

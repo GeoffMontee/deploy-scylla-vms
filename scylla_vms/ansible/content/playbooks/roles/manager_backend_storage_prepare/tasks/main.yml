@@ -1,0 +1,126 @@
+---
+- name: Refuse check mode for Manager backend storage preparation
+  ansible.builtin.assert:
+    that:
+      - not ansible_check_mode
+    fail_msg: >-
+      Manager backend storage preparation refuses check mode.
+  changed_when: false
+
+- name: Validate Manager backend storage preparation request shape
+  ansible.builtin.assert:
+    that:
+      - deploy_scylla_vms_manager_backend_storage_prepare is mapping
+      - >-
+        deploy_scylla_vms_manager_backend_storage_prepare.schema_version ==
+        'deploy-scylla-vms.ansible-manager-backend-storage-prepare/v1'
+      - deploy_scylla_vms_manager_backend_storage_prepare.role == 'manager'
+      - >-
+        deploy_scylla_vms_manager_backend_storage_prepare.action ==
+        'prepare-required'
+      - >-
+        deploy_scylla_vms_manager_backend_storage_prepare.device_count | int ==
+        1
+      - >-
+        deploy_scylla_vms_manager_backend_storage_prepare.layout == 'single'
+      - >-
+        deploy_scylla_vms_manager_backend_storage_prepare.filesystem == 'xfs'
+      - >-
+        deploy_scylla_vms_manager_backend_storage_prepare.authorization.preparation_approved
+        | bool
+    fail_msg: >-
+      Manager backend storage preparation requires one exact authorized
+      Manager-local prepare-required scope.
+  changed_when: false
+  no_log: true
+
+- name: Apply exact Manager backend storage preparation
+  manager_backend_storage_prepare:
+    payload: "{{ deploy_scylla_vms_manager_backend_storage_prepare }}"
+  register: manager_backend_storage_prepare_result
+  failed_when: false
+  no_log: true
+
+- name: Preserve strict Manager backend storage preparation result
+  ansible.builtin.set_fact:
+    manager_backend_storage_prepare_strict_result: >-
+      {{
+        manager_backend_storage_prepare_result.result
+        | default(
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-backend-storage-prepare/v1',
+              'stable_id':
+                deploy_scylla_vms_manager_backend_storage_prepare.stable_id,
+              'role': 'manager',
+              'status': 'failed',
+              'backend': 'block-volume',
+              'layout': 'single',
+              'disposition': 'prepare-required',
+              'capacity_policy_binding':
+                'operator-selected-allocation-conformance',
+              'capacity_sufficiency_state': 'not-proven',
+              'requested_size_gib':
+                deploy_scylla_vms_manager_backend_storage_prepare.requested_size_gib,
+              'observed_size_gib':
+                deploy_scylla_vms_manager_backend_storage_prepare.observed_size_gib,
+              'discovered_size_gib':
+                deploy_scylla_vms_manager_backend_storage_prepare.discovered_size_gib,
+              'device_count': 1,
+              'action_count': 0,
+              'device_set_digest':
+                deploy_scylla_vms_manager_backend_storage_prepare.authorization.device_set_digest,
+              'preparation_intent_digest':
+                deploy_scylla_vms_manager_backend_storage_prepare.authorization.preparation_intent_digest,
+              'provenance_digest':
+                deploy_scylla_vms_manager_backend_storage_prepare.provenance_digest,
+              'wipe_applied': false,
+              'mutation_boundary': 'not-crossed',
+              'first_irreversible_step': none,
+              'manual_recovery_required': false,
+              'automatic_retry_allowed': false,
+              'xfs_status': 'not-verified',
+              'fstab_status': 'not-verified',
+              'mount_status': 'not-verified',
+              'marker_status': 'not-verified',
+              'ownership_status': 'not-verified',
+              'not_performed': [
+                'cql-access',
+                'lvm-creation',
+                'manager-configuration',
+                'manager-registration',
+                'manager-tasks',
+                'package-changes',
+                'partition',
+                'raid-creation',
+                'scylla-configuration',
+                'schema-or-keyspace',
+                'service-enable',
+                'service-start',
+                'setup',
+                'tuning'
+              ]
+            },
+            true
+          )
+      }}
+  no_log: true
+
+- name: Publish strict Manager backend storage preparation evidence
+  ansible.builtin.debug:
+    msg: >-
+      DSV_MANAGER_BACKEND_STORAGE_PREPARE_B64={{
+        manager_backend_storage_prepare_strict_result
+        | to_json
+        | b64encode
+      }}
+  changed_when: false
+
+- name: Fail after publishing Manager backend storage preparation evidence
+  ansible.builtin.fail:
+    msg: >-
+      Manager backend storage preparation failed; inspect only the strict
+      redacted result contract.
+  when: >-
+    manager_backend_storage_prepare_strict_result.status !=
+    'changed'

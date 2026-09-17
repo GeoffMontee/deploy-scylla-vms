@@ -1,0 +1,64 @@
+---
+- name: Collect bounded Manager backend storage discovery evidence
+  block:
+    - name: Inspect exact Terraform-bound Block Volume facts
+      manager_backend_storage_discover:
+        payload: "{{ deploy_scylla_vms_manager_backend_storage_discover }}"
+      register: manager_backend_storage_discover_inspect
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Retain strict read-only Manager storage discovery result
+      ansible.builtin.set_fact:
+        manager_backend_storage_discover_result:
+          "{{ manager_backend_storage_discover_inspect.result }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed Manager storage discovery
+      ansible.builtin.set_fact:
+        manager_backend_storage_discover_result:
+          schema_version: >-
+            deploy-scylla-vms.ansible-manager-backend-storage-discovery/v1
+          logical_id: >-
+            {{ deploy_scylla_vms_manager_backend_storage_discover.logical_id }}
+          role: manager
+          status: failed
+          backend_type: block-volume
+          device_type: unknown
+          device_count: 0
+          total_size_gib: 0
+          signature_status: unknown
+          ownership_status: unknown
+          mount_status: unknown
+          root_status: unknown
+          device_set_digest: >-
+            sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+          topology_digest: >-
+            sha256:7b8486b2c50e30ba75225f57ca081e5ef3ca041bbb0bfe13b49fc96b4cb97137
+          manifest_digest: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_discover
+              .manifest_digest
+            }}
+          provenance: >-
+            {{ deploy_scylla_vms_manager_backend_storage_discover.provenance }}
+          not_performed: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_discover
+              .not_performed
+            }}
+          blockers:
+            - discovery-failed
+          capacity_policy_state: unknown
+          capacity_evaluation_state: not-evaluated
+      changed_when: false
+      no_log: true
+      tags:
+        - verify

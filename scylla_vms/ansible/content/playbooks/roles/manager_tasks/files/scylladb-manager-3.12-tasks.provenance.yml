@@ -1,0 +1,59 @@
+---
+schema_version: deploy-scylla-vms.manager-tasks-provenance/v1
+artifact: scylladb-manager-3.12-tasks
+retrieved_at: "2026-09-18"
+authentication:
+  immutable_official_sources:
+    - https://manager.docs.scylladb.com/branch-3.12/sctool/task.html
+    - https://manager.docs.scylladb.com/branch-3.12/sctool/suspend-resume.html
+    - https://manager.docs.scylladb.com/branch-3.12/repair/index.html
+    - https://manager.docs.scylladb.com/branch-3.12/backup/index.html
+    - https://manager.docs.scylladb.com/stable/sctool/task.html
+  official_release_line: "3.12"
+  official_service_unit: scylla-manager.service
+  official_default_api_url: http://127.0.0.1:5080/api/v1
+  official_commands:
+    inspect: sctool tasks
+    quiesce: sctool suspend --cluster <id|name>
+    resume: sctool resume --cluster <id|name>
+    repair_create: sctool repair
+    backup_create: sctool backup
+  official_task_kinds:
+    - backup
+    - repair
+  official_notes:
+    - >-
+      sctool tasks lists scheduled tasks for a registered cluster and talks
+      to the Manager API. The default API URL is derived from
+      /etc/scylla-manager/scylla-manager.yaml or
+      http://127.0.0.1:5080/api/v1.
+    - >-
+      sctool suspend --cluster stops running tasks and cancels scheduled
+      tasks. Health-check tasks continue. Resume uses
+      sctool resume --cluster.
+    - >-
+      Registering a cluster automatically schedules a weekly repair task.
+      Backup tasks require sctool backup plus a storage location.
+    - >-
+      The current manager-server slice is install-only. scylla-manager is
+      masked and inactive, no backend or cluster is registered, and no
+      auth token is written.
+verification:
+  - >-
+    Official Manager 3.12 task inspect, suspend, resume, backup, and repair
+    commands require a running Manager API and a registered cluster.
+  - >-
+    This slice validates Ubuntu 24.04, current base-os, current
+    manager-server evidence, and the PLAN action allowlist only.
+  - >-
+    PLAN does not define desired backup locations, cron, retention, or
+    repair intensity. Those schemas are not invented here.
+  - >-
+    The playbook inspects only argv-form systemctl is-enabled/is-active.
+    It never starts or unmasks Manager, never writes tokens or
+    scylla-manager.yaml, never registers a cluster, and never invokes
+    sctool or the Manager API.
+  - >-
+    Expected current evidence is applied=false with blockers
+    backend-unconfigured, manager-inactive, and manager-unregistered.
+  - Refuse live API use, secret persistence, and claimed task success.

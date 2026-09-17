@@ -1,0 +1,66 @@
+---
+- name: Prepare one explicitly authorized Scylla storage target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - storage
+    - prepare
+
+  pre_tasks:
+    - name: Refuse check mode and validate exact preparation target
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_storage_prepare is mapping
+          - deploy_scylla_vms_storage_prepare.logical_id == inventory_hostname
+          - >-
+            deploy_scylla_vms_storage_prepare.schema_version ==
+            'deploy-scylla-vms.ansible-storage-prepare/v1'
+          - >-
+            deploy_scylla_vms_storage_prepare.authorization.preparation_approved
+            is sameas true
+        fail_msg: >-
+          Storage preparation is refused in check mode or without one exact
+          stable-ID authorization; the separate plan is not a write prediction.
+        quiet: true
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: storage_prepare
+      tags:
+        - storage
+        - prepare
+
+  post_tasks:
+    - name: Emit bounded normalized storage preparation evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_STORAGE_PREPARE_B64={{
+            storage_prepare_result | to_json | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always
+
+    - name: Fail after preserving bounded storage recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Storage preparation failed. Destructive writes cannot be rolled back;
+          perform manual recovery, then rerun discovery and preflight.
+      when: storage_prepare_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

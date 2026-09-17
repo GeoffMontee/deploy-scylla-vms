@@ -1,0 +1,66 @@
+---
+- name: Verify one prepared Scylla storage target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - storage
+    - postcheck
+
+  pre_tasks:
+    - name: Validate exact read-only storage postcheck target
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_storage_postcheck is mapping
+          - deploy_scylla_vms_storage_postcheck.logical_id == inventory_hostname
+          - >-
+            deploy_scylla_vms_storage_postcheck.schema_version ==
+            'deploy-scylla-vms.ansible-storage-postcheck/v1'
+        fail_msg: >-
+          Storage postcheck requires one current, trusted, stable-ID-limited
+          Scylla target and exact preparation provenance.
+        quiet: true
+      changed_when: false
+      check_mode: true
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: storage_postcheck
+      tags:
+        - storage
+        - postcheck
+
+  post_tasks:
+    - name: Emit bounded normalized storage postcheck evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_STORAGE_POSTCHECK_B64={{
+            storage_postcheck_result | to_json | b64encode
+          }}
+      changed_when: false
+      check_mode: true
+      no_log: false
+      tags:
+        - always
+
+    - name: Refuse Scylla readiness when exact storage verification fails
+      ansible.builtin.fail:
+        msg: >-
+          Prepared storage does not match approved policy and provenance.
+          No repair was attempted; remediate and rerun discovery, preflight,
+          preparation authorization when needed, and postcheck.
+      when: not storage_postcheck_result.readiness_for_scylla | bool
+      changed_when: false
+      check_mode: true
+      no_log: true
+      tags:
+        - always

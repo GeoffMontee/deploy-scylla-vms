@@ -1,0 +1,50 @@
+---
+schema_version: deploy-scylla-vms.manager-backend-local-install-provenance/v1
+reviewed_at: "2026-09-23"
+product:
+  name: ScyllaDB Enterprise
+  release_line: "2026.2"
+  exact_package_version: 2026.2.7-0.20260902.94dae629230b-1
+  packages:
+    - scylla
+    - scylla-conf
+    - scylla-cqlsh
+    - scylla-kernel-conf
+    - scylla-node-exporter
+    - scylla-python3
+    - scylla-server
+repository:
+  definition_digest: >-
+    sha256:bc1cf67fc0790a31142b94a977adbc751d47c4ff381a19d38f8f18e13668cd4d
+  signed_inrelease: >-
+    https://downloads.scylladb.com/downloads/scylla/deb/debian-ubuntu/scylladb-2026.2/dists/stable/InRelease
+signing_key:
+  resource: roles/scylla_install/files/scylladb-2026.asc
+  artifact_digest: >-
+    sha256:f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417
+  fingerprint: 6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+upstream_role:
+  repository: https://github.com/scylladb/scylla-ansible-roles
+  pinned_commit: 42592128ff0399be8ffa18dbc985c4b026e7abd0
+  invoked: false
+  reason: >-
+    The pinned Ubuntu path is broader than this exact package-only and
+    masked-inactive service boundary.
+boundary:
+  target_role: manager
+  package_only: true
+  service_handoff: masked-inactive
+  maintainer_script_startup: prevented
+  storage_postcheck_prerequisite_reused: false
+  forbidden:
+    - cql
+    - manager-agent-token
+    - manager-configuration
+    - registration-or-tasks
+    - schema-or-keyspace
+    - scylla-configuration-rendering
+    - scylla-setup
+    - scyllamgr-setup
+    - service-enable-or-start
+    - storage-filesystem-mount-or-preparation
+    - tuning

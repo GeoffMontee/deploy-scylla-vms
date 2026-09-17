@@ -1,0 +1,109 @@
+---
+- name: Repair one exact ScyllaDB stable logical target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-repair
+
+  pre_tasks:
+    - name: Emit truthful repair check-mode refusal
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_REPAIR_B64={{
+            {
+              'schema_version': 'deploy-scylla-vms.ansible-scylla-repair/v1',
+              'reason': deploy_scylla_vms_scylla_repair.reason,
+              'status': 'not-predicted',
+              'stable_id': inventory_hostname,
+              'host_id_digest': 'sha256:' + (
+                deploy_scylla_vms_scylla_repair.host_id | hash('sha256')
+              ),
+              'pre_health_digest':
+                deploy_scylla_vms_scylla_repair.health_digest,
+              'post_health_digest': none,
+              'source_result_digest':
+                deploy_scylla_vms_scylla_repair.source_result_digest,
+              'command_evidence': 'not-run',
+              'completion_evidence': 'not-predicted',
+              'completion_cryptographically_proven': false,
+              'explicit_review_required': false,
+              'rbno_skip': deploy_scylla_vms_scylla_repair.rbno_skip,
+              'mutation_boundary': 'not-started',
+              'recovery_required': false,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Hard refuse direct repair prediction in check mode
+      ansible.builtin.fail:
+        msg: Direct Scylla repair cannot be safely predicted in check mode.
+      when: ansible_check_mode
+      tags:
+        - always
+
+    - name: Validate exact repair target and authorization
+      ansible.builtin.assert:
+        that:
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_logical_id == inventory_hostname
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_repair is mapping
+          - >-
+            deploy_scylla_vms_scylla_repair.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-repair/v1'
+          - deploy_scylla_vms_scylla_repair.stable_id == inventory_hostname
+          - >-
+            deploy_scylla_vms_scylla_repair.reason in
+            ['post-replacement', 'post-bootstrap']
+          - deploy_scylla_vms_scylla_repair.authorization.reviewed
+          - >-
+            deploy_scylla_vms_scylla_repair.repair_command ==
+            ['/usr/bin/nodetool', 'repair']
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+        quiet: true
+        fail_msg: >-
+          Repair requires one exact Scylla stable ID and narrow reviewed
+          digest-bound authorization.
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: scylla_repair
+      tags:
+        - scylla-repair
+
+  post_tasks:
+    - name: Emit strict normalized repair evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_REPAIR_B64={{
+            scylla_repair_result | to_json | b64encode
+          }}
+      changed_when: scylla_repair_result.mutation_boundary != 'not-started'
+      tags:
+        - always
+
+    - name: Stop after preserving repair recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Repair was not proven complete. Do not retry automatically; reconcile
+          full health and review the operation journal first.
+      when: scylla_repair_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

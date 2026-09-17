@@ -1,0 +1,380 @@
+---
+- name: Install exact ScyllaDB packages without configuration or startup
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-install
+
+  pre_tasks:
+    - name: Validate exact install intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_install is mapping
+          - >-
+            deploy_scylla_vms_scylla_install.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-install/v1'
+          - >-
+            deploy_scylla_vms_scylla_install.logical_id ==
+            inventory_hostname
+          - deploy_scylla_vms_scylla_install.edition == 'enterprise'
+          - deploy_scylla_vms_scylla_install.channel == 'stable'
+          - deploy_scylla_vms_scylla_install.release_line == '2026.2'
+          - >-
+            deploy_scylla_vms_scylla_install.package_version
+            is match(
+              '^2026[.]2[.](0|[1-9][0-9]*)-0[.][0-9]{8}'
+              '[.][0-9a-f]{12}-1$'
+            )
+          - >-
+            deploy_scylla_vms_scylla_install.image_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_scylla_install.image_operating_system_version ==
+            '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_scylla_install.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_scylla_install.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+          - >-
+            deploy_scylla_vms_scylla_install.upstream_role_commit ==
+            '42592128ff0399be8ffa18dbc985c4b026e7abd0'
+          - >-
+            deploy_scylla_vms_scylla_install.signing_key.fingerprint ==
+            '6C6ECC84F42AF147BD2A65AEC503C686B007F39E'
+          - >-
+            deploy_scylla_vms_scylla_install.signing_key.artifact_digest ==
+            'sha256:f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417'
+          - >-
+            deploy_scylla_vms_scylla_install.signing_key.resource ==
+            'content/playbooks/roles/scylla_install/files/scylladb-2026.asc'
+        fail_msg: >-
+          Scylla installation requires current exact Ubuntu 24.04,
+          architecture, prerequisite, version, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_INSTALL_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-install/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'requested_edition':
+                deploy_scylla_vms_scylla_install.edition,
+              'requested_version':
+                deploy_scylla_vms_scylla_install.package_version,
+              'installed_edition': none,
+              'installed_version': none,
+              'packages': {},
+              'repository_digest':
+                deploy_scylla_vms_scylla_install
+                .repository.definition_digest,
+              'signing_key_digest':
+                deploy_scylla_vms_scylla_install
+                .signing_key.artifact_digest,
+              'signing_key_fingerprint':
+                deploy_scylla_vms_scylla_install
+                .signing_key.fingerprint,
+              'service_masked': none,
+              'service_inactive': none,
+              'configuration_performed': none,
+              'storage_mutation_performed': none,
+              'tuning_performed': none,
+              'manager_operation_performed': none,
+              'service_started': none,
+              'provenance':
+                deploy_scylla_vms_scylla_install.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  tasks:
+    - name: Mask Scylla before repository or package changes
+      ansible.builtin.systemd_service:
+        name: scylla-server
+        enabled: false
+        masked: true
+      register: scylla_install_initial_mask
+      tags:
+        - packages
+
+    - name: Create the owner-controlled APT keyring directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags:
+        - packages
+
+    - name: Install the vendored authenticated ScyllaDB signing key
+      ansible.builtin.copy:
+        src: roles/scylla_install/files/scylladb-2026.asc
+        dest: /etc/apt/keyrings/scylladb-2026.asc
+        owner: root
+        group: root
+        mode: "0644"
+      register: scylla_install_key
+      tags:
+        - packages
+
+    - name: Configure the exact signed ScyllaDB 2026.2 repository
+      ansible.builtin.deb822_repository:
+        name: scylladb-2026-2
+        types:
+          - deb
+        uris:
+          - >-
+            {{
+              deploy_scylla_vms_scylla_install.repository.uri
+            }}
+        suites:
+          - stable
+        components:
+          - main
+        architectures:
+          - >-
+            {{
+              'amd64'
+              if deploy_scylla_vms_scylla_install.architecture == 'amd64'
+              else 'arm64'
+            }}
+        signed_by: /etc/apt/keyrings/scylladb-2026.asc
+        enabled: true
+        state: present
+        mode: "0644"
+      register: scylla_install_repository
+      tags:
+        - packages
+
+    - name: Install the exact allowlisted ScyllaDB package set
+      ansible.builtin.apt:
+        name: >-
+          {{
+            deploy_scylla_vms_scylla_install.packages
+            | map(
+              'regex_replace',
+              '$',
+              '='
+              + deploy_scylla_vms_scylla_install.package_version
+            )
+            | list
+          }}
+        state: present
+        update_cache: true
+        allow_downgrade: false
+        force: false
+        force_apt_get: true
+        install_recommends: false
+        policy_rc_d: 101
+      register: scylla_install_packages
+      tags:
+        - packages
+
+    - name: Reassert masked and inactive Scylla service
+      ansible.builtin.systemd_service:
+        name: scylla-server
+        enabled: false
+        masked: true
+        state: stopped
+        daemon_reload: true
+      register: scylla_install_final_mask
+      tags:
+        - verify
+
+    - name: Gather installed package facts
+      ansible.builtin.package_facts:
+        manager: apt
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Initialize normalized package evidence
+      ansible.builtin.set_fact:
+        scylla_install_installed_packages: {}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Build normalized package evidence
+      ansible.builtin.set_fact:
+        scylla_install_installed_packages: >-
+          {{
+            scylla_install_installed_packages
+            | combine({
+              item: (
+                ansible_facts.packages[item]
+                | map(attribute='version')
+                | unique
+                | list
+                | first
+              )
+            })
+          }}
+      loop: "{{ deploy_scylla_vms_scylla_install.packages }}"
+      when:
+        - item in ansible_facts.packages
+        - >-
+          ansible_facts.packages[item]
+          | map(attribute='version')
+          | unique
+          | list
+          | length == 1
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Verify the exact installed package set and versions
+      ansible.builtin.assert:
+        that:
+          - >-
+            scylla_install_installed_packages.keys()
+            | list
+            | sort
+            ==
+            deploy_scylla_vms_scylla_install.packages
+          - >-
+            scylla_install_installed_packages.values()
+            | unique
+            | list
+            ==
+            [deploy_scylla_vms_scylla_install.package_version]
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect Scylla service enablement
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-enabled
+          - scylla-server.service
+      register: scylla_install_service_enabled
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect Scylla service activity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - scylla-server.service
+      register: scylla_install_service_active
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Refuse package-script startup or service unmasking
+      ansible.builtin.assert:
+        that:
+          - scylla_install_service_enabled.stdout == 'masked'
+          - scylla_install_service_active.stdout == 'inactive'
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized Scylla install evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_INSTALL_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-install/v1',
+              'logical_id': inventory_hostname,
+              'status': (
+                'installed'
+                if (
+                  scylla_install_initial_mask.changed
+                  or scylla_install_key.changed
+                  or scylla_install_repository.changed
+                  or scylla_install_packages.changed
+                  or scylla_install_final_mask.changed
+                )
+                else 'no-change'
+              ),
+              'requested_edition':
+                deploy_scylla_vms_scylla_install.edition,
+              'requested_version':
+                deploy_scylla_vms_scylla_install.package_version,
+              'installed_edition':
+                deploy_scylla_vms_scylla_install.edition,
+              'installed_version':
+                deploy_scylla_vms_scylla_install.package_version,
+              'packages': scylla_install_installed_packages,
+              'repository_digest':
+                deploy_scylla_vms_scylla_install
+                .repository.definition_digest,
+              'signing_key_digest':
+                deploy_scylla_vms_scylla_install
+                .signing_key.artifact_digest,
+              'signing_key_fingerprint':
+                deploy_scylla_vms_scylla_install
+                .signing_key.fingerprint,
+              'service_masked': true,
+              'service_inactive': true,
+              'configuration_performed': false,
+              'storage_mutation_performed': false,
+              'tuning_performed': false,
+              'manager_operation_performed': false,
+              'service_started': false,
+              'provenance':
+                deploy_scylla_vms_scylla_install.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

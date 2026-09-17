@@ -1,0 +1,94 @@
+---
+- name: Check bounded jump and destination connectivity
+  hosts: all
+  gather_facts: false
+  become: false
+  strategy: linear
+  serial: 5
+  any_errors_fatal: false
+  max_fail_percentage: 100
+  check_mode: true
+  vars:
+    ansible_ssh_timeout: "{{ deploy_scylla_vms_connect_timeout_seconds }}"
+  tags:
+    - connectivity
+  tasks:
+    - name: Verify host identity before connecting
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_route_mode in ['direct', 'proxy-jump']
+          - >-
+            (deploy_scylla_vms_route_mode == 'proxy-jump')
+            == (deploy_scylla_vms_jump_host_id is string)
+        quiet: true
+      changed_when: false
+      no_log: true
+
+    - name: Check selected jump-host SSH connectivity
+      ansible.builtin.ping:
+      check_mode: false
+      changed_when: false
+      no_log: true
+
+    - name: Select destination TCP probes for this jump host
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_host_destination_probes: >-
+          {{
+            deploy_scylla_vms_destination_probes
+            | selectattr('jump_host_id', 'equalto', inventory_hostname)
+            | list
+          }}
+      changed_when: false
+      no_log: true
+
+    - name: Check private destination TCP connectivity
+      ansible.builtin.wait_for:
+        host: "{{ item.address }}"
+        port: "{{ item.port }}"
+        connect_timeout: "{{ deploy_scylla_vms_probe_timeout_seconds }}"
+        timeout: "{{ deploy_scylla_vms_probe_timeout_seconds }}"
+        state: started
+        msg: Destination TCP probe failed
+      loop: "{{ deploy_scylla_vms_host_destination_probes }}"
+      loop_control:
+        label: "{{ item.target_logical_id }}:{{ item.port }}"
+      register: deploy_scylla_vms_destination_probe_results
+      check_mode: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Build redacted destination TCP evidence
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_destination_evidence: >-
+          {{
+            (deploy_scylla_vms_destination_evidence | default([]))
+            + [{
+              'jump_host_id': inventory_hostname,
+              'target_logical_id': item.item.target_logical_id,
+              'role': item.item.role,
+              'port': item.item.port,
+              'status': (
+                'failed'
+                if (item.failed | default(false))
+                else 'passed'
+              )
+            }]
+          }}
+      loop: "{{ deploy_scylla_vms_destination_probe_results.results }}"
+      loop_control:
+        label: "{{ item.item.target_logical_id }}:{{ item.item.port }}"
+      changed_when: false
+      no_log: true
+
+    - name: Emit redacted destination TCP evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_TCP {{ item.jump_host_id }} {{ item.target_logical_id }}
+          {{ item.role }} {{ item.port }} {{ item.status }}
+      loop: "{{ deploy_scylla_vms_destination_evidence | default([]) }}"
+      loop_control:
+        label: "{{ item.target_logical_id }}:{{ item.port }}"
+      changed_when: false

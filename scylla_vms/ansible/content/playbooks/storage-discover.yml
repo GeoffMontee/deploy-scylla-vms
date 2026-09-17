@@ -1,0 +1,66 @@
+---
+- name: Discover Scylla storage without changing devices
+  hosts: scylla
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 5
+  any_errors_fatal: false
+  max_fail_percentage: 100
+  check_mode: true
+  tags:
+    - storage
+  pre_tasks:
+    - name: Validate storage discovery target and provenance
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_storage.generation | int > 0
+          - deploy_scylla_vms_storage.policy_digest is string
+        quiet: true
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: storage_discover
+      tags:
+        - storage
+
+  post_tasks:
+    - name: Emit bounded normalized storage discovery evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_STORAGE_DISCOVERY_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-storage-discovery/v1',
+              'cluster_uuid': deploy_scylla_vms_cluster_uuid,
+              'observation_generation':
+                deploy_scylla_vms_observation_generation,
+              'observation_digest': deploy_scylla_vms_observation_digest,
+              'inventory_generation':
+                deploy_scylla_vms_inventory_generation,
+              'inventory_digest': deploy_scylla_vms_inventory_file_digest,
+              'logical_id': deploy_scylla_vms_logical_id,
+              'provider_id': deploy_scylla_vms_provider_id,
+              'host_manifest_digest':
+                deploy_scylla_vms_host_manifest_digest,
+              'storage_generation': deploy_scylla_vms_storage.generation,
+              'storage_policy_digest':
+                deploy_scylla_vms_storage.policy_digest,
+              'tools': storage_discover_result.tools,
+              'mounts': storage_discover_result.mounts,
+              'devices': storage_discover_result.devices
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

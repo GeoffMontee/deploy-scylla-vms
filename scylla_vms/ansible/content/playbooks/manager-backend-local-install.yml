@@ -1,0 +1,253 @@
+---
+- name: Install exact local ScyllaDB backend packages on Manager
+  hosts: manager
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - manager-backend-local-install
+
+  pre_tasks:
+    - name: Validate exact Manager local-backend package intent
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'manager'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_manager_backend_local_install is mapping
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.schema_version ==
+            'deploy-scylla-vms.ansible-manager-backend-local-install/v1'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.role == 'manager'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.release_line ==
+            '2026.2'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.edition ==
+            'enterprise'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.channel == 'stable'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.packages ==
+            [
+              'scylla',
+              'scylla-conf',
+              'scylla-cqlsh',
+              'scylla-kernel-conf',
+              'scylla-node-exporter',
+              'scylla-python3',
+              'scylla-server'
+            ]
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.package_version
+            == '2026.2.7-0.20260902.94dae629230b-1'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .image_operating_system == 'Ubuntu'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .image_operating_system_version == '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_manager_backend_local_install.architecture ==
+              'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_manager_backend_local_install.architecture ==
+              'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .repository.definition_digest ==
+            'sha256:bc1cf67fc0790a31142b94a977adbc751d47c4ff381a19d38f8f18e13668cd4d'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.repository.uri ==
+            (
+              'https://downloads.scylladb.com/downloads/scylla/deb/'
+              ~ 'debian-ubuntu/scylladb-2026.2'
+            )
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .signing_key.fingerprint ==
+            '6C6ECC84F42AF147BD2A65AEC503C686B007F39E'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .signing_key.artifact_digest ==
+            'sha256:f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .signing_key.resource ==
+            'content/playbooks/roles/scylla_install/files/scylladb-2026.asc'
+          - >-
+            deploy_scylla_vms_manager_backend_local_install.source_digest
+            is match('^sha256:[0-9a-f]{64}$')
+          - >-
+            deploy_scylla_vms_manager_backend_local_install
+            .command_policy_digest is match('^sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          Manager local-backend installation requires one exact trusted
+          Ubuntu 24.04 Manager target and authenticated package provenance.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful non-predictive check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_BACKEND_LOCAL_INSTALL_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-backend-local-install/v1',
+              'logical_id': inventory_hostname,
+              'role': 'manager',
+              'operating_system': 'Ubuntu',
+              'operating_system_version': '24.04',
+              'architecture':
+                deploy_scylla_vms_manager_backend_local_install.architecture,
+              'status': 'not-predicted',
+              'changed': false,
+              'requested_release':
+                deploy_scylla_vms_manager_backend_local_install.release_line,
+              'requested_version':
+                deploy_scylla_vms_manager_backend_local_install.package_version,
+              'installed_version': none,
+              'packages': {},
+              'repository_digest':
+                deploy_scylla_vms_manager_backend_local_install
+                .repository.definition_digest,
+              'signing_key_digest':
+                deploy_scylla_vms_manager_backend_local_install
+                .signing_key.artifact_digest,
+              'signing_key_fingerprint':
+                deploy_scylla_vms_manager_backend_local_install
+                .signing_key.fingerprint,
+              'source_digest':
+                deploy_scylla_vms_manager_backend_local_install.source_digest,
+              'command_policy_digest':
+                deploy_scylla_vms_manager_backend_local_install
+                .command_policy_digest,
+              'service_masked': none,
+              'service_inactive': none,
+              'cql_performed': false,
+              'manager_agent_token_performed': false,
+              'manager_configuration_performed': false,
+              'registration_performed': false,
+              'schema_or_keyspace_performed': false,
+              'scylla_configuration_rendering_performed': false,
+              'scylla_setup_performed': false,
+              'scyllamgr_setup_performed': false,
+              'service_enabled': false,
+              'service_started': false,
+              'storage_filesystem_mutation_performed': false,
+              'storage_mount_mutation_performed': false,
+              'storage_preparation_performed': false,
+              'tasks_performed': false,
+              'tuning_performed': false,
+              'provenance':
+                deploy_scylla_vms_manager_backend_local_install.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check-mode result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  roles:
+    - role: manager_backend_local_install
+      tags:
+        - manager-backend-local-install
+
+  post_tasks:
+    - name: Emit strict normalized Manager local-backend install evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_BACKEND_LOCAL_INSTALL_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-backend-local-install/v1',
+              'logical_id': inventory_hostname,
+              'role': 'manager',
+              'operating_system': 'Ubuntu',
+              'operating_system_version': '24.04',
+              'architecture':
+                deploy_scylla_vms_manager_backend_local_install.architecture,
+              'status': (
+                'installed'
+                if manager_backend_local_install_changed
+                else 'no-change'
+              ),
+              'changed': manager_backend_local_install_changed,
+              'requested_release':
+                deploy_scylla_vms_manager_backend_local_install.release_line,
+              'requested_version':
+                deploy_scylla_vms_manager_backend_local_install.package_version,
+              'installed_version':
+                deploy_scylla_vms_manager_backend_local_install.package_version,
+              'packages': manager_backend_local_install_packages,
+              'repository_digest':
+                deploy_scylla_vms_manager_backend_local_install
+                .repository.definition_digest,
+              'signing_key_digest':
+                deploy_scylla_vms_manager_backend_local_install
+                .signing_key.artifact_digest,
+              'signing_key_fingerprint':
+                deploy_scylla_vms_manager_backend_local_install
+                .signing_key.fingerprint,
+              'source_digest':
+                deploy_scylla_vms_manager_backend_local_install.source_digest,
+              'command_policy_digest':
+                deploy_scylla_vms_manager_backend_local_install
+                .command_policy_digest,
+              'service_masked': true,
+              'service_inactive': true,
+              'cql_performed': false,
+              'manager_agent_token_performed': false,
+              'manager_configuration_performed': false,
+              'registration_performed': false,
+              'schema_or_keyspace_performed': false,
+              'scylla_configuration_rendering_performed': false,
+              'scylla_setup_performed': false,
+              'scyllamgr_setup_performed': false,
+              'service_enabled': false,
+              'service_started': false,
+              'storage_filesystem_mutation_performed': false,
+              'storage_mount_mutation_performed': false,
+              'storage_preparation_performed': false,
+              'tasks_performed': false,
+              'tuning_performed': false,
+              'provenance':
+                deploy_scylla_vms_manager_backend_local_install.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

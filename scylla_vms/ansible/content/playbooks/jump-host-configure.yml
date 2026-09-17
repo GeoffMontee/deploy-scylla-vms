@@ -1,0 +1,95 @@
+---
+- name: Harden exact validated jump hosts for ProxyJump
+  hosts: jump_hosts
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - jump-host-configure
+
+  pre_tasks:
+    - name: Validate exact jump-host configuration intent
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'jump-host'
+          - deploy_scylla_vms_route_mode == 'direct'
+          - deploy_scylla_vms_jump_host_id is none
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_jump_host_configure is mapping
+          - >-
+            deploy_scylla_vms_jump_host_configure.schema_version ==
+            'deploy-scylla-vms.ansible-jump-host-configure/v1'
+          - >-
+            deploy_scylla_vms_jump_host_configure.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_jump_host_configure.expected_private_address ==
+            deploy_scylla_vms_private_address
+          - >-
+            deploy_scylla_vms_jump_host_configure.expected_public_address ==
+            deploy_scylla_vms_public_address
+          - >-
+            deploy_scylla_vms_jump_host_configure.sshd_drop_in ==
+            '/etc/ssh/sshd_config.d/00-deploy-scylla-vms.conf'
+          - >-
+            deploy_scylla_vms_jump_host_configure.network_intent ==
+            'operator-ssh-to-jump-and-jump-ssh-to-assigned-private-hosts'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+        fail_msg: >-
+          Jump-host hardening requires exact current Ubuntu, identity, address,
+          trust, routing, NSG intent, and narrow authorization evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful non-predictive check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_JUMP_HOST_CONFIGURE_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-jump-host-configure/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'config_digest':
+                deploy_scylla_vms_jump_host_configure.config_digest,
+              'allowed_route_digest':
+                deploy_scylla_vms_jump_host_configure.allowed_route_digest,
+              'host_key_digest':
+                deploy_scylla_vms_jump_host_configure.host_key_digest,
+              'provenance_digests':
+                deploy_scylla_vms_jump_host_configure.provenance,
+              'validation_performed': false,
+              'validation_passed': none,
+              'reload_performed': false,
+              'reload_passed': none,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  roles:
+    - role: jump_host_configure
+      when: not ansible_check_mode
+      tags:
+        - jump-host-configure

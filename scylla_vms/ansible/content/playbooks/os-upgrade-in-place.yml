@@ -1,0 +1,166 @@
+---
+- name: Refuse unapproved in-place OS upgrades without host mutation
+  hosts: all
+  gather_facts: true
+  become: false
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - os-upgrade-in-place
+
+  pre_tasks:
+    - name: Hard refuse in-place upgrade prediction in check mode
+      ansible.builtin.fail:
+        msg: >-
+          OS-upgrade in-place check mode is refused because package, service,
+          and reboot mutation cannot be safely predicted.
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+        - preflight
+
+    - name: Validate exact blocked upgrade request and supported current guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - >-
+            deploy_scylla_vms_role in
+            ['scylla', 'manager', 'monitoring', 'jump-host']
+          - deploy_scylla_vms_os_upgrade_in_place is mapping
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.schema_version ==
+            'deploy-scylla-vms.ansible-os-upgrade-in-place/v1'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.role ==
+            deploy_scylla_vms_role
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.current_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place
+            .current_operating_system_version == '24.04'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.target_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place
+            .target_operating_system_version != '24.04'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.transition_classification ==
+            'unapproved'
+          - deploy_scylla_vms_os_upgrade_in_place.applied is sameas false
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.automatic_retry
+            is sameas false
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.mutation_boundary ==
+            'not-started'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.recovery_required
+            is sameas false
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.package_action ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.source_action ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.service_action ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.reboot_action ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.kernel_action ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.configuration_action ==
+            'not-performed'
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.authorization.reviewed
+            is sameas true
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.authorization.allow_sensitive
+            is sameas true
+          - >-
+            deploy_scylla_vms_os_upgrade_in_place.authorization
+            .no_competing_operation is sameas true
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - ansible_facts.system == 'Linux'
+          - >-
+            ansible_facts.architecture ==
+            deploy_scylla_vms_os_upgrade_in_place.guest_architecture
+        fail_msg: >-
+          OS-upgrade in-place requires one exact current Ubuntu 24.04 stable
+          ID, matching architecture, current eligible preflight evidence, and
+          digest-bound sensitive authorization.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  tasks:
+    - name: Retain strict blocked evidence without crossing mutation boundary
+      ansible.builtin.set_fact:
+        os_upgrade_in_place_result:
+          schema_version: deploy-scylla-vms.ansible-os-upgrade-in-place/v1
+          logical_id: "{{ inventory_hostname }}"
+          role: "{{ deploy_scylla_vms_os_upgrade_in_place.role }}"
+          status: blocked
+          transition_classification: unapproved
+          current_operating_system: Ubuntu
+          current_operating_system_version: "24.04"
+          target_operating_system: >-
+            {{
+              deploy_scylla_vms_os_upgrade_in_place.target_operating_system
+            }}
+          target_operating_system_version: >-
+            {{
+              deploy_scylla_vms_os_upgrade_in_place
+              .target_operating_system_version
+            }}
+          architecture: >-
+            {{ deploy_scylla_vms_os_upgrade_in_place.architecture }}
+          applied: false
+          package_action: not-performed
+          source_action: not-performed
+          service_action: not-performed
+          reboot_action: not-performed
+          kernel_action: not-performed
+          configuration_action: not-performed
+          automatic_retry: false
+          mutation_boundary: not-started
+          recovery_required: false
+          not_performed:
+            "{{ deploy_scylla_vms_os_upgrade_in_place.not_performed }}"
+          provenance:
+            "{{ deploy_scylla_vms_os_upgrade_in_place.provenance }}"
+          blockers:
+            "{{ deploy_scylla_vms_os_upgrade_in_place.expected_blockers }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized in-place upgrade refusal evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_OS_UPGRADE_IN_PLACE_B64={{
+            os_upgrade_in_place_result | to_json | b64encode
+          }}
+      when: os_upgrade_in_place_result is defined
+      changed_when: false
+      tags:
+        - always

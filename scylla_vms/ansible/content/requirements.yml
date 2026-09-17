@@ -1,0 +1,16 @@
+---
+# Immutable provenance for the future configuration slice. The installation
+# wrapper deliberately does not invoke this role: at this revision its Ubuntu
+# path uses apt-key, shell version discovery, package removals, Java 8, and
+# repository handling that cannot meet the installation boundary.
+# The reviewed role is the repository's `ansible-scylla-node/` subdirectory
+# (`namespace: scylladb`, `role_name: scylla_node`). Its relevant pinned
+# interface is `scylla_version`, `scylla_edition`, `install_only`,
+# `skip_role_deps`, `upgrade_version`, `scylla_manager_enabled`,
+# `skip_installed_scylla_version_check`, and `scylla_deb_repos`.
+collections: []
+roles:
+  - name: scylladb.scylla_node
+    src: https://github.com/scylladb/scylla-ansible-roles.git
+    scm: git
+    version: 42592128ff0399be8ffa18dbc985c4b026e7abd0

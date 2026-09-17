@@ -1,0 +1,229 @@
+---
+- name: Validate Manager tasks without live API, tokens, or startup
+  hosts: manager
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - manager-tasks
+
+  pre_tasks:
+    - name: Validate exact Manager task intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'manager'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_manager_tasks is mapping
+          - >-
+            deploy_scylla_vms_manager_tasks.schema_version ==
+            'deploy-scylla-vms.ansible-manager-tasks/v1'
+          - >-
+            deploy_scylla_vms_manager_tasks.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_manager_tasks.action
+            in ['inspect', 'quiesce', 'resume', 'validate']
+          - >-
+            deploy_scylla_vms_manager_tasks.requested_kinds ==
+            ['backup', 'repair']
+          - deploy_scylla_vms_manager_tasks.applied is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.backend_configured
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.registration_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.service_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.setup_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.sctool_invoked
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.auth_token_used
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.secrets_written
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.scylla_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_manager_tasks.service_unit ==
+            'scylla-manager.service'
+          - >-
+            deploy_scylla_vms_manager_tasks.requested_release ==
+            '3.12'
+          - >-
+            deploy_scylla_vms_manager_tasks.image_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_manager_tasks.image_operating_system_version ==
+            '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_manager_tasks.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_manager_tasks.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+        fail_msg: >-
+          Manager task validation requires current exact Ubuntu 24.04,
+          architecture, manager identity, action, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_TASKS_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-tasks/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'action': deploy_scylla_vms_manager_tasks.action,
+              'requested_kinds':
+                deploy_scylla_vms_manager_tasks.requested_kinds,
+              'applied': false,
+              'service_masked': none,
+              'service_inactive': none,
+              'service_started': false,
+              'backend_configured': false,
+              'registration_performed': false,
+              'setup_performed': false,
+              'sctool_invoked': false,
+              'auth_token_used': false,
+              'inspect_performed': false,
+              'quiesce_performed': false,
+              'resume_performed': false,
+              'validate_performed': false,
+              'backup_task_created': false,
+              'repair_task_created': false,
+              'secrets_written': false,
+              'scylla_started': false,
+              'not_performed':
+                deploy_scylla_vms_manager_tasks.not_performed,
+              'provenance':
+                deploy_scylla_vms_manager_tasks.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  tasks:
+    - name: Inspect Manager service enablement
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-enabled
+          - scylla-manager.service
+      register: manager_tasks_service_enabled
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Inspect Manager service activity
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - scylla-manager.service
+      register: manager_tasks_service_active
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Refuse unexpected live or enabled Manager
+      ansible.builtin.assert:
+        that:
+          - manager_tasks_service_enabled.stdout == 'masked'
+          - manager_tasks_service_active.stdout == 'inactive'
+        fail_msg: >-
+          Manager task validation refuses an enabled or active Manager
+          because no reviewed live API path exists.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized Manager task evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_TASKS_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-manager-tasks/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-performed',
+              'action': deploy_scylla_vms_manager_tasks.action,
+              'requested_kinds':
+                deploy_scylla_vms_manager_tasks.requested_kinds,
+              'applied': false,
+              'service_masked': true,
+              'service_inactive': true,
+              'service_started': false,
+              'backend_configured': false,
+              'registration_performed': false,
+              'setup_performed': false,
+              'sctool_invoked': false,
+              'auth_token_used': false,
+              'inspect_performed': false,
+              'quiesce_performed': false,
+              'resume_performed': false,
+              'validate_performed': false,
+              'backup_task_created': false,
+              'repair_task_created': false,
+              'secrets_written': false,
+              'scylla_started': false,
+              'not_performed':
+                deploy_scylla_vms_manager_tasks.not_performed,
+              'provenance':
+                deploy_scylla_vms_manager_tasks.provenance,
+              'blockers':
+                deploy_scylla_vms_manager_tasks.expected_blockers
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

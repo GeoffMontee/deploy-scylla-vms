@@ -1,0 +1,35 @@
+---
+schema_version: deploy-scylla-vms.ansible-source-provenance/v1
+artifact: os-reprovision-prepare-validation
+retrieved_at: "2026-09-18"
+baseline:
+  operating_system: Ubuntu
+  operating_system_version: "24.04"
+  scylladb_release: "2026.2"
+references:
+  - https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm
+  - https://docs.scylladb.com/manual/stable/operating-scylla/
+  - https://docs.scylladb.com/manual/stable/operating-scylla/procedures/cluster-management/replace-dead-node.html
+review:
+  target_transition_approved: false
+  provider_replacement_orchestration_implemented: false
+  scylla_generic_reprovision_approved: false
+  manager_restore_and_reregistration_implemented: false
+  monitoring_restore_and_target_refresh_implemented: false
+  replacement_host_retrust_implemented: false
+  unconditional_blockers:
+    - host-retrust-required
+    - provider-identity-revalidation-required
+    - target-transition-unapproved
+    - terraform-replacement-orchestration-unimplemented
+  source_available_meaning: >-
+    The packaged source implements strict immutable-replacement intent
+    validation and blocked not-performed evidence only. It does not implement
+    or authorize Terraform, OCI discovery, virtual-machine replacement, or
+    guest mutation.
+  boundary: >-
+    Never contact OCI, run Terraform, replace or destroy a virtual machine,
+    reuse an old provider identity, detach/delete/wipe storage, mutate desired
+    state, stop/start services, drain/decommission/removenode, edit
+    configuration, reboot, restore, re-register, refresh monitoring targets,
+    or retrust a replacement host.

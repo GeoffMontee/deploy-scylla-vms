@@ -1,0 +1,24 @@
+---
+schema_version: >-
+  deploy-scylla-vms.ansible-manager-backend-storage-discover-provenance/v1
+recorded_at: "2026-09-23"
+scope:
+  target_role: manager
+  backend: block-volume
+  device_count: 1
+  operation_classification: read-only
+decisions:
+  - Match only non-path guest identities from the exact Terraform manifest.
+  - Never select a device by kernel path, attachment order, or free capacity.
+  - Reject root and boot ancestors, local NVMe, ambiguity, and Scylla storage.
+  - Inspect only bounded block, mount, signature, and ownership evidence.
+  - Hash device, topology, manifest, and provenance identities before return.
+  - Keep capacity policy unknown and capacity adequacy not evaluated.
+  - >-
+    Never write, wipe, partition, create RAID or filesystems, mount, or edit
+    fstab.
+  - Never configure or start services and never access CQL.
+reused_contracts:
+  - deploy-scylla-vms.storage-manifest/v1
+  - deploy-scylla-vms.prepared-storage/v1
+  - deploy-scylla-vms.ansible-storage-discovery/v1

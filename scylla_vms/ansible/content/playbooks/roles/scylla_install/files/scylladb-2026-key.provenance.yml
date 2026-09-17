@@ -1,0 +1,47 @@
+---
+schema_version: deploy-scylla-vms.scylla-signing-key-provenance/v1
+artifact: scylladb-2026.asc
+retrieved_at: "2026-09-17"
+retrieval_url: >-
+  https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+sha256: f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417
+openpgp:
+  version: 4
+  algorithm: RSA
+  bits: 4096
+  fingerprint: 6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+  key_id: C503C686B007F39E
+  uid: ScyllaDB Package Signing Key 2026 <security@scylladb.com>
+  created_at: "2025-12-08T17:43:45Z"
+  expires_at: "2033-01-31T10:00:00Z"
+  revoked: false
+  signing_subkey_fingerprint: EBE8C9A0BA8865F8CCA4CD4DB99CC295DFCEA1A8
+authentication:
+  immutable_official_sources:
+    - >-
+      https://github.com/scylladb/scylladb/blob/bf2bde084b81855904d707a7be644e09c279558a/docs/getting-started/install-scylla/install-on-linux.rst
+    - >-
+      https://github.com/scylladb/scylladb-web-install/blob/c373bb0d974a8b11e9f16873b0599b00380a6600/server
+    - https://github.com/scylladb/scylla-pkg/pull/5809
+  official_repository_definition: >-
+    https://downloads.scylladb.com/deb/debian/scylla-2026.2.list
+  signed_inrelease: >-
+    https://downloads.scylladb.com/downloads/scylla/deb/debian-ubuntu/scylladb-2026.2/dists/stable/InRelease
+  observed_inrelease_sha256: >-
+    51fb8a2a9fc8246d6fc15968da2eb7aeeb3a7673068ebfdb4613fd6011021840
+  inrelease_signature_issuer_fingerprint: >-
+    6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+  certifying_master_key_fingerprint: >-
+    65D71E7BB8FAC9FA2BC40D3C3322FEB9A356B283
+verification:
+  - Retrieve the artifact over HTTPS using its complete fingerprint.
+  - Require the exact SHA-256 digest recorded above.
+  - Compute the OpenPGP v4 fingerprint from the complete primary-key packet.
+  - Require the exact UID, creation time, expiry, RSA size, and signing subkey.
+  - Refuse any key-revocation or certification-revocation packet.
+  - >-
+    Verify the official InRelease signature and require its full issuer
+    fingerprint.
+  - >-
+    Confirm the matching 64-bit key ID in both immutable official source
+    snapshots.

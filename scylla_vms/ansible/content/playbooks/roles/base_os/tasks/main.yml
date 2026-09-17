@@ -1,0 +1,16 @@
+---
+- name: Refuse unexpected operating-system family dispatch
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.os_family == 'Debian'
+      - ansible_facts.distribution == 'Ubuntu'
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - always
+
+- name: Apply Ubuntu baseline tasks
+  ansible.builtin.include_tasks: Ubuntu.yml
+  tags:
+    - base-os

@@ -1,0 +1,43 @@
+---
+schema_version: deploy-scylla-vms.scylla-cluster-shutdown-provenance/v1
+artifact: scylladb-2026.2-cluster-shutdown
+retrieved_at: "2026-09-18"
+authentication:
+  immutable_official_sources:
+    - https://docs.scylladb.com/manual/stable/operating-scylla/
+    - https://docs.scylladb.com/manual/stable/operating-scylla/admin.html
+    - https://docs.scylladb.com/manual/stable/operating-scylla/procedures/
+    - https://docs.scylladb.com/manual/branch-2026.2/operating-scylla/admin.html
+  official_release_line: "2026.2"
+  official_service_unit: scylla-server.service
+  official_notes:
+    - >-
+      PLAN cites the ScyllaDB administrator procedures index and
+      administration guide for version-specific shutdown/backup
+      requirements before full-cluster teardown.
+    - >-
+      Those cited pages document nodetool as the REST-API CLI and
+      scylla-server as the systemd unit, but they do not publish a
+      reviewed 2026.2 whole-cluster drain-then-stop or serial stop order.
+    - >-
+      PLAN destroy runs manager-tasks quiesce as a separate prior
+      playbook. The current manager-tasks slice is validation-only
+      because Manager remains masked, inactive, and unregistered.
+verification:
+  - >-
+    This slice validates Ubuntu 24.04, current full-cluster
+    scylla-health, observation/inventory/trust, and narrow
+    cluster/operation/topology/health authorization.
+  - >-
+    Manager quiesce is not invented. Explicit authorization that
+    Manager tasks are not-applicable/not-performed is required while
+    Manager remains unstarted.
+  - >-
+    The playbook inspects only argv-form systemctl is-enabled/is-active
+    for scylla-server. It never runs nodetool drain, systemd stop/mask,
+    decommission, removenode, Terraform, VM destroy, storage wipe, or
+    node start.
+  - >-
+    Expected current evidence is applied=false with blockers
+    manager-tasks-not-applicable and official-command-order-unreviewed.
+  - Refuse claimed drain/stop success and check-mode prediction.

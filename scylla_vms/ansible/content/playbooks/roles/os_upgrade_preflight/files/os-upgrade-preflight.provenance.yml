@@ -1,0 +1,73 @@
+---
+schema_version: deploy-scylla-vms.ansible-os-upgrade-preflight-provenance/v1
+retrieved_at: "2026-09-18"
+baseline:
+  operating_system: Ubuntu
+  operating_system_version: "24.04"
+  scylla_release: "2026.2"
+  architectures:
+    - amd64/x86_64
+    - aarch64
+sources:
+  - url: >-
+      https://ubuntu.com/server/docs/how-to/software/upgrade-your-release/index.html
+    conclusions:
+      - A major release upgrade is distinct from normal package updates.
+      - Only sequential LTS-to-LTS upgrades are documented.
+      - The current system must be fully updated before release upgrade.
+      - /run/reboot-required indicates a required pre-upgrade reboot.
+      - >-
+        Sufficient free disk space and reviewed third-party repositories are
+        required.
+      - The page publishes no numeric root or boot free-space threshold.
+  - url: >-
+      https://docs.scylladb.com/manual/branch-2026.2/getting-started/install-scylla/install-on-linux.html
+    conclusions:
+      - ScyllaDB 2026.2 packages use the release-specific signed APT repository.
+      - >-
+        Exact OS version and architecture support remains delegated to the
+        support matrix.
+      - This installation page does not authorize a guest OS transition.
+  - url: >-
+      https://docs.scylladb.com/stable/versioning/os-support-per-version.html
+    conclusions:
+      - ScyllaDB support is defined by release, OS version, and architecture.
+      - >-
+        The retrieved rendered table did not expose reliable support-cell
+        values.
+      - No target OS transition was inferred from missing rendered cell values.
+  - url: https://docs.oracle.com/en-us/iaas/images/ubuntu-2404/index.htm
+    conclusions:
+      - >-
+        OCI publishes Canonical Ubuntu 24.04 image families for x86_64 and
+        aarch64.
+      - Image publication is not authorization to replace an existing host.
+  - url: >-
+      https://docs.oracle.com/en-us/iaas/Content/Compute/References/images.htm
+    conclusions:
+      - OCI images are boot-disk templates selected during instance launch.
+      - >-
+        Provider image facts do not establish ScyllaDB or operation
+        compatibility.
+decisions:
+  - >-
+    PLAN defines only the current Ubuntu 24.04 baseline, not an approved target
+    transition.
+  - >-
+    Same-release requests are classified undefined and every other target
+    unsupported.
+  - >-
+    Kernel release and repository-state policies remain undefined and block
+    readiness.
+  - >-
+    Package currency is package-currency-not-performed because this read-only
+    slice does not refresh APT metadata.
+  - >-
+    Free-space thresholds are required as separately validated digest-bound
+    input.
+  - >-
+    Provider image facts are caller-supplied offline evidence; this slice never
+    contacts OCI.
+  - >-
+    This slice runs no apt update, apt upgrade, do-release-upgrade, reboot,
+    service change, Terraform, or VM replacement.

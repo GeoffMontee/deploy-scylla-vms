@@ -1,0 +1,64 @@
+---
+- name: Collect strict read-only ScyllaDB cluster health
+  hosts: scylla
+  gather_facts: false
+  become: false
+  strategy: linear
+  serial: 5
+  any_errors_fatal: false
+  max_fail_percentage: 100
+  tags:
+    - scylla-health
+    - health
+
+  pre_tasks:
+    - name: Select the exact expected stable host
+      ansible.builtin.set_fact:
+        scylla_health_expected_host: >-
+          {{
+            deploy_scylla_vms_scylla_health.expected_hosts
+            | selectattr('logical_id', 'equalto', inventory_hostname)
+            | list
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Validate exact stable target and current health request
+      ansible.builtin.assert:
+        that:
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_logical_id == inventory_hostname
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_health is mapping
+          - >-
+            deploy_scylla_vms_scylla_health.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-health/v1'
+          - >-
+            deploy_scylla_vms_scylla_health.query_policy
+            in ['all-nodes-cross-view', 'coordinator-known-identities']
+          - scylla_health_expected_host | length == 1
+          - >-
+            scylla_health_expected_host[0].datacenter ==
+            deploy_scylla_vms_scylla_datacenter
+          - >-
+            scylla_health_expected_host[0].rack ==
+            deploy_scylla_vms_scylla_rack
+          - >-
+            inventory_hostname
+            in deploy_scylla_vms_scylla_health.queried_nodes
+        fail_msg: >-
+          Scylla health requires an exact current stable-ID inventory and
+          digest-bound expected host set.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: scylla_health
+      tags:
+        - scylla-health
+        - health

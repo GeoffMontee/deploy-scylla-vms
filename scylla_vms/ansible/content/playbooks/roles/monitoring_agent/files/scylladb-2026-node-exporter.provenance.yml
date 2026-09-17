@@ -1,0 +1,60 @@
+---
+schema_version: deploy-scylla-vms.monitoring-agent-provenance/v1
+artifact: scylladb-2026.asc
+retrieved_at: "2026-09-18"
+signing_key_resource: >-
+  content/playbooks/roles/scylla_install/files/scylladb-2026.asc
+sha256: f2f1f4368a71820ea1f5e4e8900e59ddeec1e78cf98450f3ac84826c828ea417
+openpgp:
+  version: 4
+  algorithm: RSA
+  bits: 4096
+  fingerprint: 6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+  key_id: C503C686B007F39E
+  uid: ScyllaDB Package Signing Key 2026 <security@scylladb.com>
+  revoked: false
+  signing_subkey_fingerprint: EBE8C9A0BA8865F8CCA4CD4DB99CC295DFCEA1A8
+authentication:
+  immutable_official_sources:
+    - https://monitoring.docs.scylladb.com/stable/install/monitoring-stack.html
+    - https://monitoring.docs.scylladb.com/stable/troubleshooting/monitor-troubleshoot.html
+    - https://docs.scylladb.com/manual/stable/operating-scylla/admin.html
+    - https://docs.scylladb.com/manual/branch-2025.2/getting-started/install-scylla/install-on-linux.html
+  official_packages:
+    - scylla-node-exporter
+  official_service_unit: scylla-node-exporter.service
+  official_documented_metrics_port: 9100
+  official_repository_definition: >-
+    https://downloads.scylladb.com/deb/debian/scylla-2026.2.list
+  official_repository_definition_sha256: >-
+    bc1cf67fc0790a31142b94a977adbc751d47c4ff381a19d38f8f18e13668cd4d
+  signed_inrelease: >-
+    https://downloads.scylladb.com/downloads/scylla/deb/debian-ubuntu/scylladb-2026.2/dists/stable/InRelease
+  inrelease_signature_issuer_fingerprint: >-
+    6C6ECC84F42AF147BD2A65AEC503C686B007F39E
+  documented_short_key_id_not_used: A43E06657BAC99E3
+  process_exporter_per_node_package: not-documented
+verification:
+  - >-
+    Official Scylla Monitoring scrapes node_exporter on each Scylla server
+    and documents port 9100 as the optional node_exporter metrics port.
+  - >-
+    Official Scylla Linux package install lists scylla-node-exporter with
+    the exact 2026.2 package set from the signed Ubuntu/Debian repository.
+  - Reuse the already-authenticated vendored 2026 public key.
+  - Refuse host-side keyserver or HTTPS key download.
+  - Refuse latest, unsigned repositories, and node_exporter_install.
+  - >-
+    Official process-exporter is not documented as a per-node Ubuntu
+    package for this slice; do not invent one.
+  - >-
+    Startup would require an unreviewed listen-address decision. Official
+    scrape assumes a reachable node_exporter, but the documented default
+    bind is not constrained to localhost or a private address. This slice
+    therefore leaves scylla-node-exporter disabled and inactive.
+  - Refuse any key-revocation or certification-revocation packet.
+  - >-
+    This slice installs the official node-exporter package only. It does
+    not start exporters, write listen or auth configuration, install the
+    monitoring stack, generate target files, register Manager, or start
+    Scylla.

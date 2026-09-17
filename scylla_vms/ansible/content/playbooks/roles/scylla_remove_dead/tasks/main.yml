@@ -1,0 +1,221 @@
+---
+- name: Initialize conservative removenode boundary
+  ansible.builtin.set_fact:
+    scylla_remove_dead_command_boundary: not-started
+    scylla_remove_dead_mutation_boundary: unchanged
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Revalidate remove dead node and postconditions
+  block:
+    - name: Inspect required survivor quorum immediately before mutation
+      scylla_remove_dead:
+        action: inspect
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_dead.target.host_id }}
+        timeout_seconds: 60
+      delegate_to: "{{ item }}"
+      loop: >-
+        {{ deploy_scylla_vms_scylla_remove_dead.required_survivor_quorum }}
+      register: scylla_remove_dead_survivor_prechecks
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Refuse changed identity unhealthy survivors or inconsistent views
+      ansible.builtin.assert:
+        that:
+          - >-
+            scylla_remove_dead_survivor_prechecks.results
+            | map(attribute='inspection.command_ok')
+            | unique | list == [true]
+          - >-
+            scylla_remove_dead_survivor_prechecks.results
+            | map(attribute='inspection.target_present_dead')
+            | unique | list == [true]
+          - >-
+            scylla_remove_dead_survivor_prechecks.results
+            | map(attribute='inspection.schema_agreed')
+            | unique | list == [true]
+          - >-
+            scylla_remove_dead_survivor_prechecks.results
+            | map(attribute='inspection.streaming_complete')
+            | unique | list == [true]
+          - >-
+            scylla_remove_dead_survivor_prechecks.results
+            | map(attribute='inspection.ring_digest')
+            | unique | list | length == 1
+          - >-
+            scylla_remove_dead_survivor_prechecks.results
+            | map(attribute='inspection.host_id')
+            | unique | list | length ==
+            deploy_scylla_vms_scylla_remove_dead.required_survivor_quorum
+            | length
+        quiet: true
+        fail_msg: >-
+          Survivor quorum no longer proves one dead target, healthy survivors,
+          consistent ring views, schema agreement, and idle streaming.
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Journal command-start boundary before first mutation
+      ansible.builtin.set_fact:
+        scylla_remove_dead_command_boundary: started
+        scylla_remove_dead_mutation_boundary: may-have-changed
+      changed_when: false
+      no_log: true
+      tags:
+        - removenode
+
+    - name: Run the first irreversible removenode command
+      scylla_remove_dead:
+        action: removenode
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_dead.target.host_id }}
+        timeout_seconds: >-
+          {{ deploy_scylla_vms_scylla_remove_dead.timeout_seconds }}
+      register: scylla_remove_dead_command
+      no_log: true
+      tags:
+        - removenode
+
+    - name: Retain command completion boundary
+      ansible.builtin.set_fact:
+        scylla_remove_dead_command_boundary: completed
+      changed_when: false
+      no_log: true
+      tags:
+        - removenode
+
+    - name: Poll coordinator for exact post-removal state
+      scylla_remove_dead:
+        action: postcheck
+        expected_post_topology: >-
+          {{ deploy_scylla_vms_scylla_remove_dead.expected_post_topology }}
+        intended_post_topology_digest: >-
+          {{
+            deploy_scylla_vms_scylla_remove_dead
+            .intended_post_topology_digest
+          }}
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_dead.target.host_id }}
+        timeout_seconds: >-
+          {{ deploy_scylla_vms_scylla_remove_dead.timeout_seconds }}
+      register: scylla_remove_dead_postcheck
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Fail closed unless every postcondition is proven
+      ansible.builtin.assert:
+        that:
+          - scylla_remove_dead_postcheck.postcheck.complete
+          - >-
+            scylla_remove_dead_postcheck.postcheck.postconditions.values()
+            | unique | list == ['passed']
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Retain strict successful dead-removal evidence
+      ansible.builtin.set_fact:
+        scylla_remove_dead_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-remove-dead/v1
+          status: removed
+          target_stable_id: >-
+            {{ deploy_scylla_vms_scylla_remove_dead.target.stable_id }}
+          coordinator_stable_id: "{{ inventory_hostname }}"
+          target_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_remove_dead.target.host_id
+              | hash('sha256')
+            }}
+          coordinator_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_remove_dead.coordinator.host_id
+              | hash('sha256')
+            }}
+          pre_evidence_digest: >-
+            {{ deploy_scylla_vms_scylla_remove_dead.pre_evidence_digest }}
+          post_evidence_digest: >-
+            {{ scylla_remove_dead_postcheck.postcheck.post_evidence_digest }}
+          removal_command:
+            - /usr/bin/nodetool
+            - removenode
+            - "{{ deploy_scylla_vms_scylla_remove_dead.target.host_id }}"
+          status_command:
+            - /usr/bin/nodetool
+            - removenode
+            - status
+          command_boundary: completed
+          mutation_boundary: target-absent
+          removal_status: complete
+          postconditions: >-
+            {{ scylla_remove_dead_postcheck.postcheck.postconditions }}
+          recovery_required: false
+          blockers: []
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed dead removal
+      ansible.builtin.set_fact:
+        scylla_remove_dead_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-remove-dead/v1
+          status: failed
+          target_stable_id: >-
+            {{ deploy_scylla_vms_scylla_remove_dead.target.stable_id }}
+          coordinator_stable_id: "{{ inventory_hostname }}"
+          target_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_remove_dead.target.host_id
+              | hash('sha256')
+            }}
+          coordinator_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_remove_dead.coordinator.host_id
+              | hash('sha256')
+            }}
+          pre_evidence_digest: >-
+            {{ deploy_scylla_vms_scylla_remove_dead.pre_evidence_digest }}
+          post_evidence_digest: null
+          removal_command:
+            - /usr/bin/nodetool
+            - removenode
+            - "{{ deploy_scylla_vms_scylla_remove_dead.target.host_id }}"
+          status_command:
+            - /usr/bin/nodetool
+            - removenode
+            - status
+          command_boundary: "{{ scylla_remove_dead_command_boundary }}"
+          mutation_boundary: "{{ scylla_remove_dead_mutation_boundary }}"
+          removal_status: unknown
+          postconditions:
+            expected-topology: unknown
+            no-streaming: unknown
+            removal-finished: unknown
+            schema-agreement: unknown
+            survivors-up-normal: unknown
+            target-absent: unknown
+          recovery_required: true
+          blockers:
+            - >-
+              {{
+                'recovery-required'
+                if scylla_remove_dead_command_boundary != 'not-started'
+                else 'revalidation-failed'
+              }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery

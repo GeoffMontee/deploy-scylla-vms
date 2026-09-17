@@ -1,0 +1,117 @@
+---
+- name: Decommission exactly one authorized live ScyllaDB target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - scylla-remove-live
+
+  pre_tasks:
+    - name: Emit truthful check-mode refusal
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_REMOVE_LIVE_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-scylla-remove-live/v1',
+              'status': 'not-predicted',
+              'target_logical_id': inventory_hostname,
+              'target_host_id_digest':
+                'sha256:' + (
+                  deploy_scylla_vms_scylla_remove_live.target.host_id
+                  | hash('sha256')
+                ),
+              'pre_health_digest':
+                deploy_scylla_vms_scylla_remove_live.pre_health_digest,
+              'post_health_digest': none,
+              'decommission_command':
+                ['/usr/bin/nodetool', 'decommission'],
+              'command_boundary': 'not-started',
+              'membership_boundary': 'unchanged',
+              'postconditions': {
+                'expected-topology': 'not-performed',
+                'no-streaming': 'not-performed',
+                'schema-agreement': 'not-performed',
+                'survivors-up-normal': 'not-performed',
+                'target-absent': 'not-performed'
+              },
+              'recovery_required': false,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Hard refuse live decommission prediction in check mode
+      ansible.builtin.fail:
+        msg: >-
+          Live Scylla decommission check mode is refused because membership
+          mutation cannot be safely predicted.
+      when: ansible_check_mode
+      tags:
+        - always
+
+    - name: Validate exact stable target and destructive authorization
+      ansible.builtin.assert:
+        that:
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_logical_id == inventory_hostname
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_scylla_remove_live is mapping
+          - >-
+            deploy_scylla_vms_scylla_remove_live.schema_version ==
+            'deploy-scylla-vms.ansible-scylla-remove-live/v1'
+          - >-
+            deploy_scylla_vms_scylla_remove_live.target.logical_id ==
+            inventory_hostname
+          - deploy_scylla_vms_scylla_remove_live.authorization.reviewed
+          - >-
+            deploy_scylla_vms_scylla_remove_live.surviving_stable_ids
+            | length > 0
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+        quiet: true
+        fail_msg: >-
+          Live Scylla removal requires one exact stable-ID target and current,
+          reviewed, digest-bound destructive authorization.
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: scylla_remove_live
+      tags:
+        - scylla-remove-live
+
+  post_tasks:
+    - name: Emit strict normalized live-removal evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SCYLLA_REMOVE_LIVE_B64={{
+            scylla_remove_live_result | to_json | b64encode
+          }}
+      changed_when: >-
+        scylla_remove_live_result.command_boundary != 'not-started'
+      tags:
+        - always
+
+    - name: Stop after preserving recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Scylla live removal did not prove all postconditions. Preserve the
+          node and infrastructure; do not rerun decommission blindly.
+      when: scylla_remove_live_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

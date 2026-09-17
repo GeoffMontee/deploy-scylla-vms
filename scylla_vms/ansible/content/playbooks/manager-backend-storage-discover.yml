@@ -1,0 +1,78 @@
+---
+- name: Discover exact Manager backend storage without mutation
+  hosts: manager
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - manager-backend-storage-discover
+
+  pre_tasks:
+    - name: Validate exact Manager storage discovery scope
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'manager'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_manager_backend_storage_discover is mapping
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover.schema_version ==
+            'deploy-scylla-vms.ansible-manager-backend-storage-discovery/v1'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover.role == 'manager'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover.backend_type ==
+            'block-volume'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover
+            .expected_device_count == 1
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover
+            .capacity_policy_state == 'unknown'
+          - >-
+            deploy_scylla_vms_manager_backend_storage_discover
+            .capacity_evaluation_state == 'not-evaluated'
+        fail_msg: >-
+          Manager backend storage discovery requires one exact trusted Manager
+          target and a dedicated Terraform-bound Block Volume.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+  roles:
+    - role: manager_backend_storage_discover
+      tags:
+        - manager-backend-storage-discover
+
+  post_tasks:
+    - name: Emit strict normalized Manager storage discovery evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MANAGER_BACKEND_STORAGE_DISCOVERY_B64={{
+            manager_backend_storage_discover_result | to_json | b64encode
+          }}
+      when: manager_backend_storage_discover_result is defined
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after preserving failed Manager storage discovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Manager backend storage discovery could not establish bounded
+          evidence. Preserve the host and reconcile before any later action.
+      when: >-
+        manager_backend_storage_discover_result is defined
+        and manager_backend_storage_discover_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

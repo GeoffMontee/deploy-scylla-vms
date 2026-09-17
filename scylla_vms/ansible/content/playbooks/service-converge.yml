@@ -1,0 +1,158 @@
+---
+- name: Converge allowlisted systemd units without unreviewed starts
+  hosts: all
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - service-converge
+
+  pre_tasks:
+    - name: Validate exact service-converge intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_service_converge is mapping
+          - >-
+            deploy_scylla_vms_service_scope
+            == deploy_scylla_vms_service_converge.service_scope
+          - >-
+            deploy_scylla_vms_restart_policy
+            == deploy_scylla_vms_service_converge.restart_policy
+          - >-
+            deploy_scylla_vms_service_converge.schema_version ==
+            'deploy-scylla-vms.ansible-service-converge/v1'
+          - >-
+            deploy_scylla_vms_service_converge.logical_id ==
+            inventory_hostname
+          - >-
+            deploy_scylla_vms_service_converge.expected_role ==
+            deploy_scylla_vms_role
+          - >-
+            deploy_scylla_vms_service_converge.service_scope
+            in [
+              'base',
+              'jump-host',
+              'manager-agent',
+              'manager-server',
+              'monitoring-agent',
+              'monitoring-stack',
+              'monitoring-targets',
+              'scylla'
+            ]
+          - >-
+            deploy_scylla_vms_service_converge.restart_policy
+            in ['always', 'if-required', 'never']
+          - deploy_scylla_vms_service_converge.applied is sameas false
+          - deploy_scylla_vms_service_converge.started is sameas false
+          - >-
+            deploy_scylla_vms_service_converge.image_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_service_converge.image_operating_system_version ==
+            '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_service_converge.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_service_converge.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+          - >-
+            (
+              deploy_scylla_vms_service_converge.service_scope == 'base'
+            )
+            or
+            (
+              deploy_scylla_vms_service_converge.service_scope == 'jump-host'
+              and deploy_scylla_vms_role == 'jump-host'
+            )
+            or
+            (
+              deploy_scylla_vms_service_converge.service_scope in
+              ['scylla', 'manager-agent', 'monitoring-agent']
+              and deploy_scylla_vms_role == 'scylla'
+            )
+            or
+            (
+              deploy_scylla_vms_service_converge.service_scope ==
+              'manager-server'
+              and deploy_scylla_vms_role == 'manager'
+            )
+            or
+            (
+              deploy_scylla_vms_service_converge.service_scope in
+              ['monitoring-stack', 'monitoring-targets']
+              and deploy_scylla_vms_role == 'monitoring'
+            )
+        fail_msg: >-
+          service-converge requires current exact Ubuntu 24.04, architecture,
+          role, scope, restart policy, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_SERVICE_CONVERGE_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-service-converge/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'service_scope':
+                deploy_scylla_vms_service_converge.service_scope,
+              'restart_policy':
+                deploy_scylla_vms_service_converge.restart_policy,
+              'applied': false,
+              'started': false,
+              'restarted': false,
+              'units':
+                deploy_scylla_vms_service_converge.units
+                | map('combine', {
+                  'observed_enabled': none,
+                  'observed_active': none,
+                  'applied': false,
+                  'started': false,
+                  'restarted': false
+                })
+                | list,
+              'not_performed':
+                deploy_scylla_vms_service_converge.not_performed,
+              'provenance':
+                deploy_scylla_vms_service_converge.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  roles:
+    - role: service_converge
+      when: not ansible_check_mode
+      tags:
+        - service-converge

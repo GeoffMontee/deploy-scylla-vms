@@ -1,0 +1,225 @@
+---
+- name: Initialize conservative repair mutation boundary
+  ansible.builtin.set_fact:
+    scylla_repair_mutation_boundary: not-started
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Complete direct repair or strict RBNO no-op
+  block:
+    - name: Revalidate target identity version and full cluster immediately
+      scylla_repair:
+        action: inspect
+        expected_ring: "{{ deploy_scylla_vms_scylla_repair.expected_ring }}"
+        host_id: "{{ deploy_scylla_vms_scylla_repair.host_id }}"
+        server_version: "{{ deploy_scylla_vms_scylla_repair.server_version }}"
+        timeout_seconds: 60
+      register: scylla_repair_precheck
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: >-
+        Refuse identity version health schema streaming or pending-work drift
+      ansible.builtin.assert:
+        that:
+          - scylla_repair_precheck.inspection.command_ok
+          - scylla_repair_precheck.inspection.health_ok
+          - scylla_repair_precheck.inspection.host_id_matches
+          - scylla_repair_precheck.inspection.version_matches
+          - scylla_repair_precheck.inspection.schema_agreed
+          - scylla_repair_precheck.inspection.streaming_complete
+          - not scylla_repair_precheck.inspection.pending_repair
+          - not scylla_repair_precheck.inspection.pending_compactions
+        quiet: true
+        fail_msg: >-
+          Repair target or full-cluster health changed before the mutation
+          boundary, or competing repair/compaction work is active.
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Run exact foreground full repair command
+      scylla_repair:
+        action: repair
+        expected_ring: "{{ deploy_scylla_vms_scylla_repair.expected_ring }}"
+        host_id: "{{ deploy_scylla_vms_scylla_repair.host_id }}"
+        server_version: "{{ deploy_scylla_vms_scylla_repair.server_version }}"
+        timeout_seconds: "{{ deploy_scylla_vms_scylla_repair.timeout_seconds }}"
+      register: scylla_repair_command
+      when: not deploy_scylla_vms_scylla_repair.rbno_skip
+      no_log: true
+      tags:
+        - repair
+
+    - name: Journal repair command-started boundary
+      ansible.builtin.set_fact:
+        scylla_repair_mutation_boundary: command-started
+      when: not deploy_scylla_vms_scylla_repair.rbno_skip
+      changed_when: false
+      no_log: true
+      tags:
+        - repair
+
+    - name: Require exact repair command success
+      ansible.builtin.assert:
+        that:
+          - >-
+            scylla_repair_command.repair.command ==
+            ['/usr/bin/nodetool', 'repair']
+          - scylla_repair_command.repair.exit_zero
+          - not scylla_repair_command.repair.timed_out
+        quiet: true
+      when: not deploy_scylla_vms_scylla_repair.rbno_skip
+      changed_when: false
+      no_log: true
+      tags:
+        - repair
+
+    - name: Journal repair command-completed boundary
+      ansible.builtin.set_fact:
+        scylla_repair_mutation_boundary: command-completed
+      when: not deploy_scylla_vms_scylla_repair.rbno_skip
+      changed_when: false
+      no_log: true
+      tags:
+        - repair
+
+    - name: Verify full post-repair health and no pending work
+      scylla_repair:
+        action: inspect
+        expected_ring: "{{ deploy_scylla_vms_scylla_repair.expected_ring }}"
+        host_id: "{{ deploy_scylla_vms_scylla_repair.host_id }}"
+        server_version: "{{ deploy_scylla_vms_scylla_repair.server_version }}"
+        timeout_seconds: 60
+      register: scylla_repair_postcheck
+      when: not deploy_scylla_vms_scylla_repair.rbno_skip
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Require post-repair ring schema streaming and pending-work gates
+      ansible.builtin.assert:
+        that:
+          - scylla_repair_postcheck.inspection.command_ok
+          - scylla_repair_postcheck.inspection.health_ok
+          - scylla_repair_postcheck.inspection.schema_agreed
+          - scylla_repair_postcheck.inspection.streaming_complete
+          - not scylla_repair_postcheck.inspection.pending_repair
+          - not scylla_repair_postcheck.inspection.pending_compactions
+        quiet: true
+      when: not deploy_scylla_vms_scylla_repair.rbno_skip
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Retain successful direct-repair or RBNO evidence
+      ansible.builtin.set_fact:
+        scylla_repair_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-repair/v1
+          reason: "{{ deploy_scylla_vms_scylla_repair.reason }}"
+          status: >-
+            {{
+              'rbno-skipped'
+              if deploy_scylla_vms_scylla_repair.rbno_skip
+              else 'completed'
+            }}
+          stable_id: "{{ inventory_hostname }}"
+          host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_repair.host_id | hash('sha256')
+            }}
+          pre_health_digest: >-
+            {{ deploy_scylla_vms_scylla_repair.health_digest }}
+          post_health_digest: >-
+            {{
+              deploy_scylla_vms_scylla_repair.health_digest
+              if deploy_scylla_vms_scylla_repair.rbno_skip
+              else scylla_repair_postcheck.inspection.health_digest
+            }}
+          source_result_digest: >-
+            {{ deploy_scylla_vms_scylla_repair.source_result_digest }}
+          command_evidence: >-
+            {{
+              'not-run'
+              if deploy_scylla_vms_scylla_repair.rbno_skip
+              else 'exit-zero'
+            }}
+          completion_evidence: >-
+            {{
+              'rbno-enabled-complete'
+              if deploy_scylla_vms_scylla_repair.rbno_skip
+              else 'command-and-postchecks'
+            }}
+          completion_cryptographically_proven: >-
+            {{ deploy_scylla_vms_scylla_repair.rbno_skip }}
+          explicit_review_required: >-
+            {{ not deploy_scylla_vms_scylla_repair.rbno_skip }}
+          rbno_skip: "{{ deploy_scylla_vms_scylla_repair.rbno_skip }}"
+          mutation_boundary: >-
+            {{
+              'not-started'
+              if deploy_scylla_vms_scylla_repair.rbno_skip
+              else 'postchecks-passed'
+            }}
+          recovery_required: false
+          blockers: []
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Retain conservative repair failure evidence
+      ansible.builtin.set_fact:
+        scylla_repair_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-repair/v1
+          reason: "{{ deploy_scylla_vms_scylla_repair.reason }}"
+          status: failed
+          stable_id: "{{ inventory_hostname }}"
+          host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_repair.host_id | hash('sha256')
+            }}
+          pre_health_digest: >-
+            {{ deploy_scylla_vms_scylla_repair.health_digest }}
+          post_health_digest: null
+          source_result_digest: >-
+            {{ deploy_scylla_vms_scylla_repair.source_result_digest }}
+          command_evidence: >-
+            {{
+              'not-run'
+              if scylla_repair_mutation_boundary == 'not-started'
+              else 'unknown'
+            }}
+          completion_evidence: not-proven
+          completion_cryptographically_proven: false
+          explicit_review_required: true
+          rbno_skip: false
+          mutation_boundary: "{{ scylla_repair_mutation_boundary }}"
+          recovery_required: true
+          blockers:
+            - >-
+              {{
+                'revalidation-failed'
+                if scylla_repair_mutation_boundary == 'not-started'
+                else 'repair-timeout'
+                if (
+                  scylla_repair_command is defined
+                  and scylla_repair_command.repair is defined
+                  and scylla_repair_command.repair.timed_out
+                )
+                else 'command-failed'
+                if scylla_repair_mutation_boundary == 'command-started'
+                else 'post-health-failed'
+              }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery

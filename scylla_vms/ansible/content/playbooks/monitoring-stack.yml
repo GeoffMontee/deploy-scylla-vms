@@ -1,0 +1,355 @@
+---
+- name: Install exact Scylla Monitoring stack without bind, secrets, or startup
+  hosts: monitoring
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - monitoring-stack
+
+  pre_tasks:
+    - name: Validate exact monitoring-stack install intent and supported guest
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'monitoring'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_monitoring_stack is mapping
+          - >-
+            deploy_scylla_vms_monitoring_stack.schema_version ==
+            'deploy-scylla-vms.ansible-monitoring-stack/v1'
+          - >-
+            deploy_scylla_vms_monitoring_stack.logical_id ==
+            inventory_hostname
+          - deploy_scylla_vms_monitoring_stack.channel == 'stable'
+          - deploy_scylla_vms_monitoring_stack.release_line == '4.16'
+          - deploy_scylla_vms_monitoring_stack.stack_version == '4.16.0'
+          - >-
+            deploy_scylla_vms_monitoring_stack.listen_policy ==
+            'not-started'
+          - >-
+            deploy_scylla_vms_monitoring_stack.service_unit ==
+            'docker.service'
+          - >-
+            deploy_scylla_vms_monitoring_stack.install_root ==
+            '/opt/scylla-monitoring/4.16.0'
+          - >-
+            deploy_scylla_vms_monitoring_stack.cache_path ==
+            '/var/cache/deploy-scylla-vms/scylla-monitoring-4.16.0.tar.gz'
+          - >-
+            deploy_scylla_vms_monitoring_stack.source_commit ==
+            'fac61b89b229a69d2af2d88b7e09a6316c3924e4'
+          - >-
+            deploy_scylla_vms_monitoring_stack.artifact.uri
+            ==
+            'https://github.com/scylladb/scylla-monitoring/'
+            ~ 'archive/4.16.0.tar.gz'
+          - >-
+            deploy_scylla_vms_monitoring_stack.artifact.digest
+            ==
+            'sha256:'
+            ~ '3f016d90d3591fd01e7173a3c392b43a21316851a6290b6910dbc41be62fe7fc'
+          - >-
+            deploy_scylla_vms_monitoring_stack.artifacts ==
+            {
+              'alertmanager': 'v0.34.0',
+              'grafana': '13.2.0',
+              'loki': '3.7.7',
+              'prometheus': 'v3.14.0',
+              'promtail': '3.6.11',
+              'stack': '4.16.0'
+            }
+          - >-
+            deploy_scylla_vms_monitoring_stack.documented_ports ==
+            {
+              'alertmanager': 9093,
+              'grafana': 3000,
+              'prometheus': 9090
+            }
+          - >-
+            deploy_scylla_vms_monitoring_stack.auth_configured
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.compose_generated
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.containers_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack
+            .manager_registration_performed
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.public_bind
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.scylla_started
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.secrets_written
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.targets_generated
+            is sameas false
+          - >-
+            deploy_scylla_vms_monitoring_stack.image_operating_system ==
+            'Ubuntu'
+          - >-
+            deploy_scylla_vms_monitoring_stack.image_operating_system_version ==
+            '24.04'
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - >-
+            (
+              deploy_scylla_vms_monitoring_stack.architecture == 'amd64'
+              and ansible_facts.architecture == 'x86_64'
+            )
+            or
+            (
+              deploy_scylla_vms_monitoring_stack.architecture == 'aarch64'
+              and ansible_facts.architecture == 'aarch64'
+            )
+        fail_msg: >-
+          Monitoring stack installation requires current exact Ubuntu 24.04,
+          architecture, monitoring identity, version, and provenance evidence.
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+        - preflight
+
+    - name: Emit truthful check-mode result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MONITORING_STACK_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-monitoring-stack/v1',
+              'logical_id': inventory_hostname,
+              'status': 'not-predicted',
+              'requested_release':
+                deploy_scylla_vms_monitoring_stack.release_line,
+              'requested_version':
+                deploy_scylla_vms_monitoring_stack.stack_version,
+              'installed_version': none,
+              'artifacts': {},
+              'artifact_digest':
+                deploy_scylla_vms_monitoring_stack.artifact.digest,
+              'source_commit':
+                deploy_scylla_vms_monitoring_stack.source_commit,
+              'service_enabled': none,
+              'service_inactive': none,
+              'containers_started': false,
+              'listen_policy': 'not-started',
+              'documented_ports':
+                deploy_scylla_vms_monitoring_stack.documented_ports,
+              'targets_generated': false,
+              'auth_configured': false,
+              'public_bind': false,
+              'manager_registration_performed': false,
+              'scylla_started': false,
+              'secrets_written': false,
+              'compose_generated': false,
+              'provenance':
+                deploy_scylla_vms_monitoring_stack.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      when: ansible_check_mode
+      changed_when: false
+      tags:
+        - always
+
+    - name: Stop after non-predictive check result
+      ansible.builtin.meta: end_host
+      when: ansible_check_mode
+      tags:
+        - always
+
+  tasks:
+    - name: Create the owner-controlled Monitoring stack cache directory
+      ansible.builtin.file:
+        path: /var/cache/deploy-scylla-vms
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags:
+        - packages
+
+    - name: Create the versioned Monitoring stack install directory
+      ansible.builtin.file:
+        path: /opt/scylla-monitoring/4.16.0
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      tags:
+        - packages
+
+    - name: Download the digest-pinned official Monitoring stack archive
+      ansible.builtin.get_url:
+        url: "{{ deploy_scylla_vms_monitoring_stack.artifact.uri }}"
+        dest: "{{ deploy_scylla_vms_monitoring_stack.cache_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+        checksum: "{{ deploy_scylla_vms_monitoring_stack.artifact.digest }}"
+        force: false
+        timeout: 120
+        validate_certs: true
+      register: monitoring_stack_archive
+      tags:
+        - packages
+
+    - name: Extract the exact Monitoring stack archive without startup files
+      ansible.builtin.unarchive:
+        src: "{{ deploy_scylla_vms_monitoring_stack.cache_path }}"
+        dest: "{{ deploy_scylla_vms_monitoring_stack.install_root }}"
+        remote_src: true
+        extra_opts:
+          - --strip-components=1
+        owner: root
+        group: root
+        creates: >-
+          {{ deploy_scylla_vms_monitoring_stack.install_root }}/versions.sh
+      register: monitoring_stack_extract
+      tags:
+        - packages
+
+    - name: Read the extracted official versions file
+      ansible.builtin.slurp:
+        src: "{{ deploy_scylla_vms_monitoring_stack.install_root }}/versions.sh"
+      register: monitoring_stack_versions
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Verify the pinned stack and component versions
+      ansible.builtin.assert:
+        that:
+          - >-
+            'PROMETHEUS_VERSION=v3.14.0'
+            in (monitoring_stack_versions.content | b64decode)
+          - >-
+            'GRAFANA_VERSION=13.2.0'
+            in (monitoring_stack_versions.content | b64decode)
+          - >-
+            'ALERT_MANAGER_VERSION=v0.34.0'
+            in (monitoring_stack_versions.content | b64decode)
+          - >-
+            'LOKI_VERSION=3.7.7'
+            in (monitoring_stack_versions.content | b64decode)
+          - >-
+            'PROMTAIL_VERSION=3.6.11'
+            in (monitoring_stack_versions.content | b64decode)
+          - >-
+            '2026.2'
+            in (monitoring_stack_versions.content | b64decode)
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect docker enablement without installing or starting it
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-enabled
+          - docker.service
+      register: monitoring_stack_service_enabled
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Inspect docker activity without installing or starting it
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - docker.service
+      register: monitoring_stack_service_active
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Refuse docker startup, enablement, or container launch
+      ansible.builtin.assert:
+        that:
+          - >-
+            monitoring_stack_service_enabled.stdout
+            not in ['enabled', 'enabled-runtime']
+          - >-
+            monitoring_stack_service_active.stdout
+            not in ['active', 'activating', 'deactivating', 'reloading']
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  post_tasks:
+    - name: Emit strict normalized monitoring-stack install evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_MONITORING_STACK_B64={{
+            {
+              'schema_version':
+                'deploy-scylla-vms.ansible-monitoring-stack/v1',
+              'logical_id': inventory_hostname,
+              'status': (
+                'installed'
+                if (
+                  monitoring_stack_archive.changed
+                  or monitoring_stack_extract.changed
+                )
+                else 'no-change'
+              ),
+              'requested_release':
+                deploy_scylla_vms_monitoring_stack.release_line,
+              'requested_version':
+                deploy_scylla_vms_monitoring_stack.stack_version,
+              'installed_version':
+                deploy_scylla_vms_monitoring_stack.stack_version,
+              'artifacts': deploy_scylla_vms_monitoring_stack.artifacts,
+              'artifact_digest':
+                deploy_scylla_vms_monitoring_stack.artifact.digest,
+              'source_commit':
+                deploy_scylla_vms_monitoring_stack.source_commit,
+              'service_enabled': false,
+              'service_inactive': true,
+              'containers_started': false,
+              'listen_policy': 'not-started',
+              'documented_ports':
+                deploy_scylla_vms_monitoring_stack.documented_ports,
+              'targets_generated': false,
+              'auth_configured': false,
+              'public_bind': false,
+              'manager_registration_performed': false,
+              'scylla_started': false,
+              'secrets_written': false,
+              'compose_generated': false,
+              'provenance':
+                deploy_scylla_vms_monitoring_stack.provenance,
+              'blockers': []
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always

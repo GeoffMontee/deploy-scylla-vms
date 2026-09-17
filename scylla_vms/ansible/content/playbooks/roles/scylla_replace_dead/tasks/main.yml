@@ -1,0 +1,310 @@
+---
+- name: Initialize conservative replacement mutation boundary
+  ansible.builtin.set_fact:
+    scylla_replace_dead_mutation_boundary: not-started
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Revalidate write key start and replacement membership
+  block:
+    - name: Revalidate the required survivor quorum immediately before mutation
+      scylla_replace_dead:
+        action: inspect-survivor
+        old_host_id: "{{ deploy_scylla_vms_scylla_replace_dead.old_host_id }}"
+        timeout_seconds: 60
+      delegate_to: "{{ item }}"
+      loop: >-
+        {{ deploy_scylla_vms_scylla_replace_dead.required_survivor_quorum }}
+      register: scylla_replace_dead_survivor_prechecks
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Refuse lost quorum changed dead identity or inconsistent views
+      ansible.builtin.assert:
+        that:
+          - >-
+            scylla_replace_dead_survivor_prechecks.results
+            | map(attribute='inspection.command_ok')
+            | unique | list == [true]
+          - >-
+            scylla_replace_dead_survivor_prechecks.results
+            | map(attribute='inspection.old_host_present_dead')
+            | unique | list == [true]
+          - >-
+            scylla_replace_dead_survivor_prechecks.results
+            | map(attribute='inspection.schema_agreed')
+            | unique | list == [true]
+          - >-
+            scylla_replace_dead_survivor_prechecks.results
+            | map(attribute='inspection.streaming_complete')
+            | unique | list == [true]
+          - >-
+            scylla_replace_dead_survivor_prechecks.results
+            | map(attribute='inspection.ring_digest')
+            | unique | list | length == 1
+          - >-
+            scylla_replace_dead_survivor_prechecks.results
+            | map(attribute='inspection.host_id')
+            | unique | list | length ==
+            deploy_scylla_vms_scylla_replace_dead.required_survivor_quorum
+            | length
+        quiet: true
+        fail_msg: >-
+          Survivor quorum no longer proves the exact dead Host ID, healthy
+          schema-agreed idle survivors, and consistent ring views.
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Revalidate replacement package config service and empty storage
+      scylla_replace_dead:
+        action: inspect-target
+        config_digest: >-
+          {{
+            deploy_scylla_vms_scylla_replace_dead
+            .config_file_digests['scylla.yaml']
+          }}
+        old_host_id: "{{ deploy_scylla_vms_scylla_replace_dead.old_host_id }}"
+        package_version: >-
+          {{ deploy_scylla_vms_scylla_replace_dead.package_version }}
+        timeout_seconds: 60
+      register: scylla_replace_dead_target_precheck
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Refuse replacement target drift or nonempty data
+      ansible.builtin.assert:
+        that:
+          - scylla_replace_dead_target_precheck.inspection.command_ok
+          - scylla_replace_dead_target_precheck.inspection.package_matches
+          - scylla_replace_dead_target_precheck.inspection.config_matches
+          - scylla_replace_dead_target_precheck.inspection.service_masked
+          - scylla_replace_dead_target_precheck.inspection.service_inactive
+          - scylla_replace_dead_target_precheck.inspection.storage_empty
+          - >-
+            not scylla_replace_dead_target_precheck.inspection
+            .replacement_key_present
+          - >-
+            not scylla_replace_dead_target_precheck.inspection
+            .obsolete_key_present
+        quiet: true
+        fail_msg: >-
+          Replacement target package, configuration, service, or empty-storage
+          evidence changed before the mutation boundary.
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Atomically add only the first-boot replacement Host ID key
+      scylla_replace_dead:
+        action: write-key
+        config_digest: >-
+          {{
+            deploy_scylla_vms_scylla_replace_dead
+            .config_file_digests['scylla.yaml']
+          }}
+        old_host_id: "{{ deploy_scylla_vms_scylla_replace_dead.old_host_id }}"
+        package_version: >-
+          {{ deploy_scylla_vms_scylla_replace_dead.package_version }}
+        timeout_seconds: 60
+      register: scylla_replace_dead_key
+      no_log: true
+      tags:
+        - configure-key
+
+    - name: Journal replacement key-written boundary
+      ansible.builtin.set_fact:
+        scylla_replace_dead_mutation_boundary: key-written
+      changed_when: false
+      no_log: true
+      tags:
+        - configure-key
+
+    - name: Unmask replacement service at the irreversible boundary
+      ansible.builtin.systemd_service:
+        name: scylla-server
+        masked: false
+      no_log: true
+      tags:
+        - start
+
+    - name: Start replacement service exactly once
+      ansible.builtin.systemd_service:
+        name: scylla-server
+        state: started
+      no_log: true
+      tags:
+        - start
+
+    - name: Journal service-start membership boundary
+      ansible.builtin.set_fact:
+        scylla_replace_dead_mutation_boundary: membership-may-have-changed
+      changed_when: false
+      no_log: true
+      tags:
+        - start
+
+    - name: Poll survivors for replacement completion
+      scylla_replace_dead:
+        action: postcheck
+        datacenter: "{{ deploy_scylla_vms_scylla_replace_dead.datacenter }}"
+        expected_survivors: >-
+          {{ deploy_scylla_vms_scylla_replace_dead.expected_survivors }}
+        intended_post_state_digest: >-
+          {{
+            deploy_scylla_vms_scylla_replace_dead
+            .intended_post_state_digest
+          }}
+        old_host_id: "{{ deploy_scylla_vms_scylla_replace_dead.old_host_id }}"
+        rack: "{{ deploy_scylla_vms_scylla_replace_dead.rack }}"
+        timeout_seconds: >-
+          {{ deploy_scylla_vms_scylla_replace_dead.timeout_seconds }}
+      delegate_to: >-
+        {{ deploy_scylla_vms_scylla_replace_dead.required_survivor_quorum[0] }}
+      register: scylla_replace_dead_postcheck
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Fail closed unless every replacement postcondition is proven
+      ansible.builtin.assert:
+        that:
+          - scylla_replace_dead_postcheck.postcheck.complete
+          - >-
+            scylla_replace_dead_postcheck.postcheck.postconditions.values()
+            | unique | list == ['passed']
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Retain strict successful replacement evidence
+      ansible.builtin.set_fact:
+        scylla_replace_dead_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-replace-dead/v1
+          status: replaced
+          stable_id: "{{ inventory_hostname }}"
+          old_provider_id_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.old_provider_id_digest }}
+          new_provider_id_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.new_provider_id_digest }}
+          old_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_replace_dead.old_host_id | hash('sha256')
+            }}
+          new_host_id_digest: >-
+            {{ scylla_replace_dead_postcheck.postcheck.new_host_id_digest }}
+          pre_evidence_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.pre_evidence_digest }}
+          post_evidence_digest: >-
+            {{ scylla_replace_dead_postcheck.postcheck.post_evidence_digest }}
+          config_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.config_digest }}
+          storage_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.storage_digest }}
+          topology_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.topology_digest }}
+          intended_post_state_digest: >-
+            {{
+              deploy_scylla_vms_scylla_replace_dead.intended_post_state_digest
+            }}
+          mutation_boundary: membership-proven
+          streaming_status: complete
+          ring_status: UN
+          replacement_key_retained: true
+          repair_required: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.repair_required }}
+          rbno_status: >-
+            {{
+              'enabled-complete'
+              if (
+                deploy_scylla_vms_scylla_replace_dead.rbno.enabled
+                and deploy_scylla_vms_scylla_replace_dead.rbno.complete
+              )
+              else 'repair-required'
+            }}
+          postconditions: >-
+            {{ scylla_replace_dead_postcheck.postcheck.postconditions }}
+          recovery_required: false
+          blockers: []
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed replacement
+      ansible.builtin.set_fact:
+        scylla_replace_dead_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-replace-dead/v1
+          status: failed
+          stable_id: "{{ inventory_hostname }}"
+          old_provider_id_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.old_provider_id_digest }}
+          new_provider_id_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.new_provider_id_digest }}
+          old_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_replace_dead.old_host_id | hash('sha256')
+            }}
+          new_host_id_digest: null
+          pre_evidence_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.pre_evidence_digest }}
+          post_evidence_digest: null
+          config_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.config_digest }}
+          storage_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.storage_digest }}
+          topology_digest: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.topology_digest }}
+          intended_post_state_digest: >-
+            {{
+              deploy_scylla_vms_scylla_replace_dead.intended_post_state_digest
+            }}
+          mutation_boundary: "{{ scylla_replace_dead_mutation_boundary }}"
+          streaming_status: unknown
+          ring_status: unknown
+          replacement_key_retained: >-
+            {{ scylla_replace_dead_mutation_boundary != 'not-started' }}
+          repair_required: >-
+            {{ deploy_scylla_vms_scylla_replace_dead.repair_required }}
+          rbno_status: >-
+            {{
+              'enabled-complete'
+              if (
+                deploy_scylla_vms_scylla_replace_dead.rbno.enabled
+                and deploy_scylla_vms_scylla_replace_dead.rbno.complete
+              )
+              else 'repair-required'
+            }}
+          postconditions:
+            expected-topology: unknown
+            new-host-id: unknown
+            no-streaming: unknown
+            old-host-id-absent: unknown
+            replacement-up-normal: unknown
+            schema-agreement: unknown
+          recovery_required: true
+          blockers:
+            - >-
+              {{
+                'revalidation-failed'
+                if scylla_replace_dead_mutation_boundary == 'not-started'
+                else 'key-write-failed'
+                if scylla_replace_dead_mutation_boundary == 'key-written'
+                else 'postcondition-disagreement'
+              }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery

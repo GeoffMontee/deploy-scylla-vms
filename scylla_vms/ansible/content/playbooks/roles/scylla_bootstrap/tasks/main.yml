@@ -1,0 +1,429 @@
+---
+- name: Gather exact installed package facts before bootstrap
+  ansible.builtin.package_facts:
+    manager: apt
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Inspect configured Scylla files before bootstrap
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    checksum_algorithm: sha256
+    follow: false
+  loop:
+    - path: /etc/scylla/scylla.yaml
+      digest: >-
+        {{
+          deploy_scylla_vms_scylla_bootstrap
+          .config_file_digests['scylla.yaml']
+        }}
+    - path: /etc/scylla/cassandra-rackdc.properties
+      digest: >-
+        {{
+          deploy_scylla_vms_scylla_bootstrap
+          .config_file_digests['cassandra-rackdc.properties']
+        }}
+  register: scylla_bootstrap_config_stats
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Inspect initial Scylla service mask
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - scylla-server.service
+  register: scylla_bootstrap_initial_enabled
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Inspect initial Scylla service activity
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - scylla-server.service
+  register: scylla_bootstrap_initial_active
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Validate exact package configuration and inactive service gates
+  ansible.builtin.assert:
+    that:
+      - "'scylla-server' in ansible_facts.packages"
+      - >-
+        ansible_facts.packages['scylla-server']
+        | map(attribute='version')
+        | unique
+        | list
+        == [deploy_scylla_vms_scylla_bootstrap.package_version]
+      - scylla_bootstrap_config_stats.results | length == 2
+      - scylla_bootstrap_config_stats.results[0].stat.isreg
+      - not scylla_bootstrap_config_stats.results[0].stat.islnk
+      - >-
+        'sha256:' + scylla_bootstrap_config_stats.results[0].stat.checksum
+        == scylla_bootstrap_config_stats.results[0].item.digest
+      - scylla_bootstrap_config_stats.results[1].stat.isreg
+      - not scylla_bootstrap_config_stats.results[1].stat.islnk
+      - >-
+        'sha256:' + scylla_bootstrap_config_stats.results[1].stat.checksum
+        == scylla_bootstrap_config_stats.results[1].item.digest
+      - scylla_bootstrap_initial_enabled.stdout == 'masked'
+      - scylla_bootstrap_initial_active.stdout == 'inactive'
+      - >-
+        (
+          deploy_scylla_vms_scylla_bootstrap.mode == 'initial-seed'
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.existing_member_count == 0
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.live_cluster_state_absent
+          and deploy_scylla_vms_scylla_bootstrap.seed_stable_ids
+          == [inventory_hostname]
+        )
+        or
+        (
+          deploy_scylla_vms_scylla_bootstrap.mode == 'join-existing'
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.existing_member_count > 0
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.healthy_member_ids | length > 0
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.healthy_seed_ids | length > 0
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.capacity_check_passed
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.topology_check_passed
+          and deploy_scylla_vms_scylla_bootstrap
+          .authorization.schema_agreement
+          and inventory_hostname
+          not in deploy_scylla_vms_scylla_bootstrap.seed_stable_ids
+        )
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Revalidate service mask immediately before first mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-enabled
+      - scylla-server.service
+  register: scylla_bootstrap_revalidated_enabled
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - revalidate
+
+- name: Revalidate service activity immediately before first mutation
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/systemctl
+      - is-active
+      - scylla-server.service
+  register: scylla_bootstrap_revalidated_active
+  changed_when: false
+  failed_when: false
+  no_log: true
+  tags:
+    - revalidate
+
+- name: Refuse service drift immediately before first mutation
+  ansible.builtin.assert:
+    that:
+      - scylla_bootstrap_revalidated_enabled.stdout == 'masked'
+      - scylla_bootstrap_revalidated_active.stdout == 'inactive'
+    quiet: true
+  changed_when: false
+  no_log: true
+  tags:
+    - revalidate
+
+- name: Bootstrap and verify the one authorized target
+  block:
+    - name: Unmask enable and start Scylla at the irreversible boundary
+      ansible.builtin.systemd_service:
+        name: scylla-server
+        enabled: true
+        masked: false
+        state: started
+      register: scylla_bootstrap_started
+      tags:
+        - start
+
+    - name: Wait boundedly for local CQL readiness
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 9042
+        state: started
+        connect_timeout: 5
+        sleep: 5
+        timeout: >-
+          {{
+            deploy_scylla_vms_scylla_bootstrap.bootstrap_timeout_seconds
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Wait boundedly for local Scylla API readiness
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 10000
+        state: started
+        connect_timeout: 5
+        sleep: 5
+        timeout: >-
+          {{
+            deploy_scylla_vms_scylla_bootstrap.bootstrap_timeout_seconds
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Verify active service after readiness waits
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/systemctl
+          - is-active
+          - scylla-server.service
+      register: scylla_bootstrap_final_active
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Read local Scylla Host ID
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/nodetool
+          - info
+      register: scylla_bootstrap_info
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Read exact ring membership
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/nodetool
+          - status
+      register: scylla_bootstrap_status
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Read exact streaming state
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/nodetool
+          - netstats
+      register: scylla_bootstrap_netstats
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Read post-bootstrap schema agreement
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/nodetool
+          - describecluster
+      register: scylla_bootstrap_schema
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Derive bounded local membership identity
+      ansible.builtin.set_fact:
+        scylla_bootstrap_host_id: >-
+          {{
+            (
+              scylla_bootstrap_info.stdout
+              | regex_search(
+                  '(?im)^ID[ ]*:[ ]*([0-9a-f-]{36})[ ]*$',
+                  '\1'
+                )
+              | first
+            )
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Require Up Normal identity topology streaming and schema agreement
+      ansible.builtin.assert:
+        that:
+          - scylla_bootstrap_final_active.stdout == 'active'
+          - scylla_bootstrap_host_id is match('^[0-9a-f-]{36}$')
+          - >-
+            scylla_bootstrap_status.stdout
+            is search(
+              '(?m)^UN[ ]+[^ ]+[ ]+.*[ ]'
+              + (scylla_bootstrap_host_id | regex_escape)
+              + '[ ]+'
+              + (
+                deploy_scylla_vms_scylla_bootstrap.rack
+                | regex_escape
+              )
+              + '[ ]*$'
+            )
+          - >-
+            scylla_bootstrap_status.stdout
+            is search(
+              '(?m)^Datacenter:[ ]*'
+              + (
+                deploy_scylla_vms_scylla_bootstrap.datacenter
+                | regex_escape
+              )
+              + '[ ]*$'
+            )
+          - "'Mode: NORMAL' in scylla_bootstrap_netstats.stdout"
+          - "'Not sending any streams.' in scylla_bootstrap_netstats.stdout"
+          - "'Not receiving any streams.' in scylla_bootstrap_netstats.stdout"
+          - "'Schema versions:' in scylla_bootstrap_schema.stdout"
+          - >-
+            scylla_bootstrap_schema.stdout
+            | regex_findall('(?m)^[ \t]*[0-9a-f-]{36}:[ \t]*\[')
+            | unique
+            | length == 1
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Retain strict successful bootstrap evidence
+      ansible.builtin.set_fact:
+        scylla_bootstrap_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-bootstrap/v1
+          mode: "{{ deploy_scylla_vms_scylla_bootstrap.mode }}"
+          status: bootstrapped
+          target_logical_id: "{{ inventory_hostname }}"
+          service_state: active
+          ring_membership_digest: >-
+            sha256:{{ scylla_bootstrap_status.stdout | hash('sha256') }}
+          host_id_digest: >-
+            sha256:{{ scylla_bootstrap_host_id | hash('sha256') }}
+          datacenter: "{{ deploy_scylla_vms_scylla_bootstrap.datacenter }}"
+          rack: "{{ deploy_scylla_vms_scylla_bootstrap.rack }}"
+          streaming_state: complete
+          prerequisite_digests: >-
+            {{ deploy_scylla_vms_scylla_bootstrap.prerequisite_digests }}
+          mutation_boundary: ring-membership-may-have-changed
+          recovery_required: false
+          blockers: []
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Inspect whether target membership may have changed
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/nodetool
+          - status
+      register: scylla_bootstrap_failed_status
+      changed_when: false
+      failed_when: false
+      no_log: true
+      tags:
+        - recovery
+
+    - name: Classify whether the target may have joined
+      ansible.builtin.set_fact:
+        scylla_bootstrap_may_have_joined: >-
+          {{
+            scylla_bootstrap_failed_status.rc == 0
+            and (
+              scylla_bootstrap_failed_status.stdout
+              is search(
+                '(?m)^[UD][NLJM][ ]+[^ ]+[ ]+.*[ ]'
+                + (
+                  deploy_scylla_vms_scylla_bootstrap.rack
+                  | regex_escape
+                )
+                + '[ ]*$'
+              )
+            )
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery
+
+    - name: Stop and remask only a target proven never joined
+      ansible.builtin.systemd_service:
+        name: scylla-server
+        enabled: false
+        masked: true
+        state: stopped
+      when: not scylla_bootstrap_may_have_joined
+      tags:
+        - recovery
+
+    - name: Retain strict failed bootstrap and recovery evidence
+      ansible.builtin.set_fact:
+        scylla_bootstrap_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-bootstrap/v1
+          mode: "{{ deploy_scylla_vms_scylla_bootstrap.mode }}"
+          status: failed
+          target_logical_id: "{{ inventory_hostname }}"
+          service_state: >-
+            {{
+              'unknown-preserved'
+              if scylla_bootstrap_may_have_joined
+              else 'masked'
+            }}
+          ring_membership_digest: >-
+            {{
+              (
+                'sha256:'
+                + (scylla_bootstrap_failed_status.stdout | hash('sha256'))
+              )
+              if scylla_bootstrap_failed_status.rc == 0
+              else none
+            }}
+          host_id_digest: null
+          datacenter: "{{ deploy_scylla_vms_scylla_bootstrap.datacenter }}"
+          rack: "{{ deploy_scylla_vms_scylla_bootstrap.rack }}"
+          streaming_state: unknown
+          prerequisite_digests: >-
+            {{ deploy_scylla_vms_scylla_bootstrap.prerequisite_digests }}
+          mutation_boundary: >-
+            {{
+              'ring-membership-may-have-changed'
+              if scylla_bootstrap_may_have_joined
+              else 'service-unmasked-started'
+            }}
+          recovery_required: true
+          blockers:
+            - >-
+              {{
+                'join-incomplete'
+                if scylla_bootstrap_may_have_joined
+                else 'execution-failed'
+              }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery

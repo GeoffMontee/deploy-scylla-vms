@@ -1,0 +1,30 @@
+---
+schema_version: deploy-scylla-vms.ansible-source-provenance/v1
+component: manager-backend-storage-prepare
+implementation: wrapper-owned-manager-local-storage-boundary
+scope:
+  role: manager
+  targets: exact-one
+  backend: block-volume
+  layout: whole-device-xfs
+policy:
+  allocation_conformance: requested-observed-discovered-equal
+  capacity_sufficiency: not-proven
+  check_mode: refused
+  wipe_consent: separate-digest-bound
+  automatic_retry: refused-after-mutation-boundary
+forbidden:
+  - cql
+  - lvm
+  - manager-configuration
+  - manager-registration
+  - manager-tasks
+  - package-changes
+  - partition
+  - raid
+  - scylla-configuration
+  - schema
+  - service-enable
+  - service-start
+  - setup
+  - tuning

@@ -1,0 +1,108 @@
+---
+- name: Inspect scylla-server without drain, stop, or mask
+  block:
+    - name: Collect bounded systemd evidence
+      scylla_cluster_shutdown:
+        action: inspect
+        timeout_seconds: 15
+      register: scylla_cluster_shutdown_inspect
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Retain fail-closed not-performed shutdown evidence
+      ansible.builtin.set_fact:
+        scylla_cluster_shutdown_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-cluster-shutdown/v1
+          status: not-performed
+          applied: false
+          drain_performed: false
+          stop_performed: false
+          mask_performed: false
+          manager_quiesce_performed: false
+          decommission_performed: false
+          removenode_performed: false
+          start_performed: false
+          terraform_ran: false
+          vm_destroyed: false
+          storage_wiped: false
+          mutation_boundary: not-started
+          recovery_required: false
+          nodes:
+            - logical_id: "{{ inventory_hostname }}"
+              host_id_digest: >-
+                sha256:{{
+                  (
+                    deploy_scylla_vms_scylla_cluster_shutdown.hosts
+                    | selectattr('logical_id', 'equalto', inventory_hostname)
+                    | map(attribute='host_id')
+                    | first
+                  )
+                  | hash('sha256')
+                }}
+              drain_state: not-performed
+              stop_state: not-performed
+              mask_state: not-performed
+              observed_enabled:
+                "{{ scylla_cluster_shutdown_inspect.inspection.enabled }}"
+              observed_active:
+                "{{ scylla_cluster_shutdown_inspect.inspection.active }}"
+          not_performed:
+            "{{ deploy_scylla_vms_scylla_cluster_shutdown.not_performed }}"
+          provenance:
+            "{{ deploy_scylla_vms_scylla_cluster_shutdown.provenance }}"
+          blockers:
+            "{{ deploy_scylla_vms_scylla_cluster_shutdown.expected_blockers }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed shutdown without mutation
+      ansible.builtin.set_fact:
+        scylla_cluster_shutdown_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-cluster-shutdown/v1
+          status: failed
+          applied: false
+          drain_performed: false
+          stop_performed: false
+          mask_performed: false
+          manager_quiesce_performed: false
+          decommission_performed: false
+          removenode_performed: false
+          start_performed: false
+          terraform_ran: false
+          vm_destroyed: false
+          storage_wiped: false
+          mutation_boundary: not-started
+          recovery_required: false
+          nodes:
+            - logical_id: "{{ inventory_hostname }}"
+              host_id_digest: >-
+                sha256:{{
+                  (
+                    deploy_scylla_vms_scylla_cluster_shutdown.hosts
+                    | selectattr('logical_id', 'equalto', inventory_hostname)
+                    | map(attribute='host_id')
+                    | first
+                  )
+                  | hash('sha256')
+                }}
+              drain_state: unknown
+              stop_state: unknown
+              mask_state: unknown
+              observed_enabled: null
+              observed_active: null
+          not_performed:
+            "{{ deploy_scylla_vms_scylla_cluster_shutdown.not_performed }}"
+          provenance:
+            "{{ deploy_scylla_vms_scylla_cluster_shutdown.provenance }}"
+          blockers:
+            - service-inspect-failed
+      changed_when: false
+      no_log: true
+      tags:
+        - verify

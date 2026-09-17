@@ -1,0 +1,60 @@
+---
+- name: Validate host key and atomically install validated sshd hardening
+  jump_host_configure:
+    config: "{{ deploy_scylla_vms_jump_host_configure.config }}"
+    config_digest: "{{ deploy_scylla_vms_jump_host_configure.config_digest }}"
+    expected_host_key_algorithm: >-
+      {{ deploy_scylla_vms_jump_host_configure.host_key.algorithm }}
+    expected_host_key_fingerprint: >-
+      {{ deploy_scylla_vms_jump_host_configure.host_key.fingerprint }}
+    path: "{{ deploy_scylla_vms_jump_host_configure.sshd_drop_in }}"
+  register: jump_host_configure_apply
+  notify: Reload sshd after validated hardening
+  no_log: true
+  tags:
+    - configure
+    - validate
+
+- name: Run the reload handler before reporting success
+  ansible.builtin.meta: flush_handlers
+  tags:
+    - reload
+
+- name: Emit strict redacted jump-host configuration result
+  ansible.builtin.debug:
+    msg: >-
+      DSV_JUMP_HOST_CONFIGURE_B64={{
+        {
+          'schema_version':
+            'deploy-scylla-vms.ansible-jump-host-configure/v1',
+          'logical_id': inventory_hostname,
+          'status': (
+            'changed'
+            if jump_host_configure_apply.changed
+            else 'noop'
+          ),
+          'config_digest':
+            deploy_scylla_vms_jump_host_configure.config_digest,
+          'allowed_route_digest':
+            deploy_scylla_vms_jump_host_configure.allowed_route_digest,
+          'host_key_digest':
+            deploy_scylla_vms_jump_host_configure.host_key_digest,
+          'provenance_digests':
+            deploy_scylla_vms_jump_host_configure.provenance,
+          'validation_performed': true,
+          'validation_passed': true,
+          'reload_performed':
+            jump_host_configure_apply.changed,
+          'reload_passed': (
+            true
+            if jump_host_configure_apply.changed
+            else none
+          ),
+          'blockers': []
+        }
+        | to_json
+        | b64encode
+      }}
+  changed_when: false
+  tags:
+    - verify

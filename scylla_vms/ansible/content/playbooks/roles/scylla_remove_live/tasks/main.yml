@@ -1,0 +1,207 @@
+---
+- name: Initialize conservative decommission boundary
+  ansible.builtin.set_fact:
+    scylla_remove_live_command_boundary: not-started
+    scylla_remove_live_membership_boundary: unchanged
+  changed_when: false
+  no_log: true
+  tags:
+    - preflight
+
+- name: Revalidate identity decommission and postconditions
+  block:
+    - name: Inspect target identity and ring immediately before mutation
+      scylla_remove_live:
+        action: inspect
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_live.target.host_id }}
+        timeout_seconds: 60
+      register: scylla_remove_live_target_precheck
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Inspect healthy surviving coordinator immediately before mutation
+      scylla_remove_live:
+        action: inspect
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_live.target.host_id }}
+        timeout_seconds: 60
+      delegate_to: >-
+        {{ deploy_scylla_vms_scylla_remove_live.coordinator_stable_id }}
+      register: scylla_remove_live_coordinator_precheck
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Refuse address-only or changed ring identity before mutation
+      ansible.builtin.assert:
+        that:
+          - scylla_remove_live_target_precheck.inspection.command_ok
+          - scylla_remove_live_coordinator_precheck.inspection.command_ok
+          - >-
+            scylla_remove_live_target_precheck.inspection.host_id ==
+            deploy_scylla_vms_scylla_remove_live.target.host_id
+          - >-
+            scylla_remove_live_target_precheck.inspection.ring ==
+            scylla_remove_live_coordinator_precheck.inspection.ring
+          - scylla_remove_live_target_precheck.inspection.schema_agreed
+          - scylla_remove_live_target_precheck.inspection.streaming_complete
+          - >-
+            scylla_remove_live_target_precheck.inspection.ring
+            | selectattr(
+                'host_id',
+                'equalto',
+                deploy_scylla_vms_scylla_remove_live.target.host_id
+              )
+            | selectattr('state', 'equalto', 'UN')
+            | list
+            | length == 1
+        quiet: true
+        fail_msg: >-
+          Stable-ID and Host-ID ring evidence changed immediately before
+          decommission.
+      changed_when: false
+      no_log: true
+      tags:
+        - revalidate
+
+    - name: Journal command-start boundary before first mutation
+      ansible.builtin.set_fact:
+        scylla_remove_live_command_boundary: started
+        scylla_remove_live_membership_boundary: may-have-changed
+      changed_when: false
+      no_log: true
+      tags:
+        - decommission
+
+    - name: Run the first irreversible decommission command
+      scylla_remove_live:
+        action: decommission
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_live.target.host_id }}
+        timeout_seconds: >-
+          {{
+            deploy_scylla_vms_scylla_remove_live
+            .decommission_timeout_seconds
+          }}
+      register: scylla_remove_live_decommission
+      no_log: true
+      tags:
+        - decommission
+
+    - name: Retain command completion boundary
+      ansible.builtin.set_fact:
+        scylla_remove_live_command_boundary: completed
+      changed_when: false
+      no_log: true
+      tags:
+        - decommission
+
+    - name: Poll surviving coordinator for exact post-removal state
+      scylla_remove_live:
+        action: postcheck
+        expected_post_topology: >-
+          {{ deploy_scylla_vms_scylla_remove_live.expected_post_topology }}
+        intended_post_topology_digest: >-
+          {{
+            deploy_scylla_vms_scylla_remove_live
+            .intended_post_topology_digest
+          }}
+        target_host_id: >-
+          {{ deploy_scylla_vms_scylla_remove_live.target.host_id }}
+        timeout_seconds: >-
+          {{
+            deploy_scylla_vms_scylla_remove_live
+            .decommission_timeout_seconds
+          }}
+      delegate_to: >-
+        {{ deploy_scylla_vms_scylla_remove_live.coordinator_stable_id }}
+      register: scylla_remove_live_postcheck
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Fail closed unless every postcondition is proven
+      ansible.builtin.assert:
+        that:
+          - scylla_remove_live_postcheck.postcheck.complete
+          - >-
+            scylla_remove_live_postcheck.postcheck.postconditions.values()
+            | unique | list == ['passed']
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+    - name: Retain strict successful removal evidence
+      ansible.builtin.set_fact:
+        scylla_remove_live_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-remove-live/v1
+          status: removed
+          target_logical_id: "{{ inventory_hostname }}"
+          target_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_remove_live.target.host_id
+              | hash('sha256')
+            }}
+          pre_health_digest: >-
+            {{ deploy_scylla_vms_scylla_remove_live.pre_health_digest }}
+          post_health_digest: >-
+            {{ scylla_remove_live_postcheck.postcheck.post_health_digest }}
+          decommission_command:
+            - /usr/bin/nodetool
+            - decommission
+          command_boundary: completed
+          membership_boundary: target-absent
+          postconditions: >-
+            {{ scylla_remove_live_postcheck.postcheck.postconditions }}
+          recovery_required: false
+          blockers: []
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed removal without another mutation
+      ansible.builtin.set_fact:
+        scylla_remove_live_result:
+          schema_version: deploy-scylla-vms.ansible-scylla-remove-live/v1
+          status: failed
+          target_logical_id: "{{ inventory_hostname }}"
+          target_host_id_digest: >-
+            sha256:{{
+              deploy_scylla_vms_scylla_remove_live.target.host_id
+              | hash('sha256')
+            }}
+          pre_health_digest: >-
+            {{ deploy_scylla_vms_scylla_remove_live.pre_health_digest }}
+          post_health_digest: null
+          decommission_command:
+            - /usr/bin/nodetool
+            - decommission
+          command_boundary: "{{ scylla_remove_live_command_boundary }}"
+          membership_boundary: "{{ scylla_remove_live_membership_boundary }}"
+          postconditions:
+            expected-topology: unknown
+            no-streaming: unknown
+            schema-agreement: unknown
+            survivors-up-normal: unknown
+            target-absent: unknown
+          recovery_required: true
+          blockers:
+            - >-
+              {{
+                'recovery-required'
+                if scylla_remove_live_command_boundary != 'not-started'
+                else 'identity-changed'
+              }}
+      changed_when: false
+      no_log: true
+      tags:
+        - recovery

@@ -1,0 +1,60 @@
+---
+schema_version: deploy-scylla-vms.monitoring-stack-provenance/v1
+artifact: scylla-monitoring-4.16.0.tar.gz
+retrieved_at: "2026-09-18"
+official_archive_uri: >-
+  https://github.com/scylladb/scylla-monitoring/archive/4.16.0.tar.gz
+sha256: 3f016d90d3591fd01e7173a3c392b43a21316851a6290b6910dbc41be62fe7fc
+source_commit: fac61b89b229a69d2af2d88b7e09a6316c3924e4
+source_tag: "4.16.0"
+install_root: /opt/scylla-monitoring/4.16.0
+authentication:
+  immutable_official_sources:
+    - https://monitoring.docs.scylladb.com/stable/install/monitoring-stack.html
+    - https://monitoring.docs.scylladb.com/stable/install/docker-compose.html
+    - https://monitoring.docs.scylladb.com/stable/install/
+    - https://github.com/scylladb/scylla-monitoring/releases/tag/4.16.0
+  official_stack_version: "4.16.0"
+  official_scylla_versions_include: "2026.2"
+  official_component_versions:
+    prometheus: v3.14.0
+    grafana: "13.2.0"
+    alertmanager: v0.34.0
+    loki: "3.7.7"
+    promtail: "3.6.11"
+  official_documented_ports:
+    grafana: 3000
+    prometheus: 9090
+    alertmanager: 9093
+  official_runtime: docker
+  official_service_unit: docker.service
+  unsigned_container_images: not-pulled
+verification:
+  - >-
+    Official Scylla Monitoring 4.16.0 is the current stable tagged archive
+    published by the install guide as
+    https://github.com/scylladb/scylla-monitoring/archive/4.16.0.tar.gz
+    and GitHub release 4.16.0 at commit
+    fac61b89b229a69d2af2d88b7e09a6316c3924e4.
+  - >-
+    The tagged versions.sh pins Prometheus v3.14.0, Grafana 13.2.0,
+    Alertmanager v0.34.0, Loki 3.7.7, and Promtail 3.6.11, and lists
+    ScyllaDB 2026.2 among SUPPORTED_VERSIONS for 4.16.
+  - >-
+    Official startup uses start-all.sh or docker-compose, publishes
+    Grafana 3000, Prometheus 9090, and Alertmanager 9093, and enables
+    anonymous Grafana admin with a default admin password. Those bind,
+    auth, and secret decisions are unreviewed, so this slice never
+    starts Docker, never pulls images, and never generates Compose,
+    .env, Grafana auth, or scrape targets.
+  - Refuse latest, unsigned repositories, unsigned image pulls, and
+    host-side wget/curl without a pinned SHA-256 digest.
+  - >-
+    Docker CE and Ubuntu docker.io package versions are not pinned by the
+    official Monitoring 4.16.0 archive, so this slice does not install
+    Docker. Runtime remains not-started.
+  - >-
+    This slice places the digest-checked official archive only. It does
+    not generate monitoring-targets, install node-exporter, register
+    Manager, start Scylla, weaken SSH or firewall policy, or persist
+    secrets.

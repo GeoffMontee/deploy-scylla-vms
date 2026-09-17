@@ -1,0 +1,71 @@
+---
+- name: Retire one explicitly authorized prepared Scylla storage target
+  hosts: scylla
+  gather_facts: true
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - storage
+    - retire
+
+  pre_tasks:
+    - name: Refuse check mode and validate exact retirement target
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_role == 'scylla'
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_storage_retire is mapping
+          - deploy_scylla_vms_storage_retire.logical_id == inventory_hostname
+          - >-
+            deploy_scylla_vms_storage_retire.schema_version ==
+            'deploy-scylla-vms.ansible-storage-retire/v1'
+          - >-
+            deploy_scylla_vms_storage_retire.authorization.retirement_approved
+            is sameas true
+          - >-
+            deploy_scylla_vms_storage_retire.authorization.membership_absent
+            is sameas true
+        fail_msg: >-
+          Storage retirement is refused in check mode or without one exact
+          stable-ID authorization after proven membership absence; the
+          separate plan is not a write prediction.
+        quiet: true
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+  roles:
+    - role: storage_retire
+      tags:
+        - storage
+        - retire
+
+  post_tasks:
+    - name: Emit bounded normalized storage retirement evidence
+      ansible.builtin.debug:
+        msg: >-
+          DSV_STORAGE_RETIRE_B64={{
+            storage_retire_result | to_json | b64encode
+          }}
+      changed_when: false
+      no_log: false
+      tags:
+        - always
+
+    - name: Fail after preserving bounded storage retirement recovery evidence
+      ansible.builtin.fail:
+        msg: >-
+          Storage retirement failed. Started unmount, RAID deactivation, or
+          wipe cannot be rolled back; perform manual recovery, then rerun
+          discovery, preflight, and postcheck before retry.
+      when: storage_retire_result.status == 'failed'
+      no_log: true
+      tags:
+        - always

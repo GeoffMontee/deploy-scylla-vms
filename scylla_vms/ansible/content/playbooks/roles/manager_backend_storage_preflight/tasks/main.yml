@@ -1,0 +1,90 @@
+---
+- name: Collect bounded Manager backend storage preflight evidence
+  block:
+    - name: Inspect exact dedicated Manager storage policy and host facts
+      manager_backend_storage_preflight:
+        payload: "{{ deploy_scylla_vms_manager_backend_storage_preflight }}"
+      register: manager_backend_storage_preflight_inspect
+      changed_when: false
+      no_log: true
+      tags:
+        - inspect
+        - verify
+
+    - name: Retain strict read-only Manager storage preflight result
+      ansible.builtin.set_fact:
+        manager_backend_storage_preflight_result:
+          "{{ manager_backend_storage_preflight_inspect.result }}"
+      changed_when: false
+      no_log: true
+      tags:
+        - verify
+
+  rescue:
+    - name: Conservatively classify failed Manager storage preflight
+      ansible.builtin.set_fact:
+        manager_backend_storage_preflight_result:
+          actions: []
+          backend: block-volume
+          blocker_digest: >-
+            sha256:2adf0cbe6e641e4acd383b85984e3c8eabb6ba8e3cafb0f60056dcbd560136dd
+          blockers:
+            - preflight-failed
+          capacity_policy_state: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight
+              .capacity_policy_state
+            }}
+          capacity_sufficiency_state: not-proven
+          device_count: 0
+          device_set_digest: >-
+            sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
+          device_size_gib: 0
+          disposition: blocked
+          filesystem: xfs
+          fstab_state: unknown
+          layout: single
+          mount_boundary: fixed-scylla-data-root
+          mount_state: unknown
+          not_performed: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight
+              .not_performed
+            }}
+          observed_size_gib: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight
+              .observed_size_gib
+            }}
+          ownership_state: unknown
+          partition_present: false
+          preparation_intent_digest: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight
+              .preparation_intent_digest
+            }}
+          provenance_digest: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight
+              .provenance_digest
+            }}
+          raid_present: false
+          requested_size_gib: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight
+              .requested_size_gib
+            }}
+          role: manager
+          role_marker_state: unknown
+          schema_version: >-
+            deploy-scylla-vms.ansible-manager-backend-storage-preflight/v1
+          signature_state: unknown
+          stable_id: >-
+            {{
+              deploy_scylla_vms_manager_backend_storage_preflight.stable_id
+            }}
+          wipe_required: false
+      changed_when: false
+      no_log: true
+      tags:
+        - verify

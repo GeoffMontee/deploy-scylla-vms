@@ -1,0 +1,293 @@
+---
+- name: Reboot one exact deploy target and verify strict reconnect evidence
+  hosts: all
+  gather_facts: false
+  become: true
+  strategy: linear
+  serial: 1
+  any_errors_fatal: true
+  max_fail_percentage: 0
+  tags:
+    - deploy-reboot
+
+  pre_tasks:
+    - name: Refuse check mode and validate the operation-bound request
+      ansible.builtin.assert:
+        that:
+          - not ansible_check_mode
+          - inventory_hostname == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+          - deploy_scylla_vms_deploy_reboot.schema_version
+            == 'deploy-scylla-vms.ansible-deploy-reboot-request/v1'
+          - deploy_scylla_vms_deploy_reboot.logical_id
+            == deploy_scylla_vms_logical_id
+          - deploy_scylla_vms_deploy_reboot.role == deploy_scylla_vms_role
+          - deploy_scylla_vms_deploy_reboot.os_family == 'Ubuntu'
+          - deploy_scylla_vms_deploy_reboot.os_version == '24.04'
+          - >-
+            deploy_scylla_vms_deploy_reboot.architecture
+            in ['x86_64', 'aarch64']
+          - deploy_scylla_vms_deploy_reboot.reboot_timeout_seconds | int >= 60
+          - deploy_scylla_vms_deploy_reboot.reboot_timeout_seconds | int <= 1800
+          - deploy_scylla_vms_deploy_reboot.connect_timeout_seconds | int >= 5
+          - deploy_scylla_vms_deploy_reboot.connect_timeout_seconds | int <= 60
+          - deploy_scylla_vms_deploy_reboot.post_reboot_delay_seconds | int >= 0
+          - >-
+            deploy_scylla_vms_deploy_reboot.post_reboot_delay_seconds
+            | int <= 60
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Gather bounded pre-reboot machine identity
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - distribution
+        filter:
+          - ansible_architecture
+          - ansible_distribution
+          - ansible_distribution_version
+          - ansible_os_family
+      register: deploy_scylla_vms_reboot_pre_facts
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Validate exact Ubuntu guest identity before reboot
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.distribution == 'Ubuntu'
+          - ansible_facts.distribution_version == '24.04'
+          - ansible_facts.os_family == 'Debian'
+          - ansible_facts.architecture
+            == deploy_scylla_vms_deploy_reboot.architecture
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Select the fixed role service safety gates
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_reboot_forbidden_services: >-
+          {{
+            {
+              'jump-host': [],
+              'manager': ['scylla-manager.service'],
+              'monitoring': ['grafana-server.service', 'prometheus.service'],
+              'scylla': [
+                'scylla-manager-agent.service',
+                'scylla-node-exporter.service',
+                'scylla-server.service'
+              ]
+            }[deploy_scylla_vms_role]
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Inspect allowlisted role services before reboot
+      ansible.builtin.service_facts:
+      register: deploy_scylla_vms_reboot_pre_services
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Require role services to be inactive before reboot
+      ansible.builtin.assert:
+        that:
+          - >-
+            item not in ansible_facts.services
+            or ansible_facts.services[item].state not in ['active', 'running']
+        quiet: true
+      loop: "{{ deploy_scylla_vms_reboot_forbidden_services }}"
+      loop_control:
+        label: redacted-service-gate
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Read the bounded pre-reboot boot identity
+      ansible.builtin.slurp:
+        src: /proc/sys/kernel/random/boot_id
+      register: deploy_scylla_vms_reboot_pre_boot
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Hash the pre-reboot boot identity in memory
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_reboot_pre_boot_digest: >-
+          {{
+            deploy_scylla_vms_reboot_pre_boot.content
+            | b64decode
+            | trim
+            | hash('sha256')
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+  tasks:
+    - name: Reboot the exact serial target and reconnect
+      ansible.builtin.reboot:
+        reboot_timeout: >-
+          {{ deploy_scylla_vms_deploy_reboot.reboot_timeout_seconds | int }}
+        connect_timeout: >-
+          {{ deploy_scylla_vms_deploy_reboot.connect_timeout_seconds | int }}
+        post_reboot_delay: >-
+          {{ deploy_scylla_vms_deploy_reboot.post_reboot_delay_seconds | int }}
+      register: deploy_scylla_vms_reboot_action
+      no_log: true
+      tags:
+        - deploy-reboot
+
+  post_tasks:
+    - name: Gather bounded post-reboot machine identity
+      ansible.builtin.setup:
+        gather_subset:
+          - "!all"
+          - "!min"
+          - distribution
+        filter:
+          - ansible_architecture
+          - ansible_distribution
+          - ansible_distribution_version
+          - ansible_os_family
+      register: deploy_scylla_vms_reboot_post_facts
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Read the bounded post-reboot boot identity
+      ansible.builtin.slurp:
+        src: /proc/sys/kernel/random/boot_id
+      register: deploy_scylla_vms_reboot_post_boot
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Inspect the Ubuntu reboot-required marker after reconnect
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+        follow: false
+        get_attributes: false
+        get_checksum: false
+        get_mime: false
+      register: deploy_scylla_vms_reboot_marker
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Reinspect allowlisted role services after reboot
+      ansible.builtin.service_facts:
+      register: deploy_scylla_vms_reboot_post_services
+      check_mode: false
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Require role services to remain inactive after reboot
+      ansible.builtin.assert:
+        that:
+          - >-
+            item not in ansible_facts.services
+            or ansible_facts.services[item].state not in ['active', 'running']
+        quiet: true
+      loop: "{{ deploy_scylla_vms_reboot_forbidden_services }}"
+      loop_control:
+        label: redacted-service-gate
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Build strict post-reboot verification gates
+      ansible.builtin.set_fact:
+        deploy_scylla_vms_reboot_post_boot_digest: >-
+          {{
+            deploy_scylla_vms_reboot_post_boot.content
+            | b64decode
+            | trim
+            | hash('sha256')
+          }}
+        deploy_scylla_vms_reboot_identity_verified: >-
+          {{
+            inventory_hostname == deploy_scylla_vms_logical_id
+            and ansible_facts.distribution == 'Ubuntu'
+            and ansible_facts.distribution_version == '24.04'
+            and ansible_facts.os_family == 'Debian'
+            and ansible_facts.architecture
+              == deploy_scylla_vms_deploy_reboot.architecture
+          }}
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Require complete reconnect and reboot-clear evidence
+      ansible.builtin.assert:
+        that:
+          - deploy_scylla_vms_reboot_action.rebooted | default(false) | bool
+          - deploy_scylla_vms_reboot_pre_boot_digest
+            != deploy_scylla_vms_reboot_post_boot_digest
+          - deploy_scylla_vms_reboot_identity_verified | bool
+          - not deploy_scylla_vms_reboot_marker.stat.exists | default(false)
+          - deploy_scylla_vms_host_key_checking_required is sameas true
+        quiet: true
+      changed_when: false
+      no_log: true
+      tags:
+        - always
+
+    - name: Emit the strict address-free post-reboot result
+      ansible.builtin.debug:
+        msg: >-
+          DSV_DEPLOY_REBOOT_B64={{
+            {
+              'schema_version': 'deploy-scylla-vms.ansible-deploy-reboot/v1',
+              'logical_id': deploy_scylla_vms_logical_id,
+              'role': deploy_scylla_vms_role,
+              'status': 'succeeded',
+              'os_family': 'Ubuntu',
+              'os_version': '24.04',
+              'architecture': ansible_facts.architecture,
+              'services_safe_before': true,
+              'reboot_performed': true,
+              'reconnected': true,
+              'boot_changed': true,
+              'identity_verified': true,
+              'trust_revalidated': true,
+              'machine_evidence_verified': true,
+              'services_safe_after': true,
+              'reboot_required_clear': true,
+              'elapsed_seconds': deploy_scylla_vms_reboot_action.elapsed | int,
+              'request_digest':
+                deploy_scylla_vms_deploy_reboot.request_digest
+            }
+            | to_json
+            | b64encode
+          }}
+      changed_when: false
+      tags:
+        - always
